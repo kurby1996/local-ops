@@ -13,17 +13,17 @@
 
 ## 开发环境
 
-- macOS 12 或更高版本；
+- Windows 10 或 Windows 11；
 - Python 3.12；
 - Node.js，仅用于 JavaScript 语法检查；
 - 运行时无第三方 Python 依赖。
 
 只有重新生成纹理时才需要开发依赖：
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements-dev.txt
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install -r requirements-dev.txt
 ```
 
 ## 修改原则

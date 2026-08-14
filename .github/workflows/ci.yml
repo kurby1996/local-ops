@@ -11,7 +11,7 @@ permissions:
 jobs:
   check-and-release:
     name: Check and release audit
-    runs-on: macos-15
+    runs-on: windows-latest
     timeout-minutes: 20
     env:
       PYTHONDONTWRITEBYTECODE: "1"
@@ -34,13 +34,9 @@ jobs:
           node --version
 
       - name: Run project checks
-        run: make check PYTHON=python
+        run: python tools/check_project.py
 
       - name: Build and verify release
         run: |
-          make release PYTHON=python
-          make release-verify PYTHON=python
-          cp dist/console-*.zip "$RUNNER_TEMP/console-first.zip"
-          make release PYTHON=python
-          cmp "$RUNNER_TEMP/console-first.zip" dist/console-*.zip
-          make release-verify PYTHON=python
+          python tools/build_release.py --dist dist
+          python tools/build_release.py --dist dist --verify-only

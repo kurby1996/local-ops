@@ -44,8 +44,9 @@ INCLUDE = (
     "licenses",
     *REQUIRED_LICENSES,
     "server.py",
-    "start.command",
-    "总控台.app",
+    "winops.py",
+    "start.bat",
+    "start.vbs",
     "static",
     "docs",
     "tests",
@@ -104,9 +105,7 @@ SENSITIVE_SUFFIXES = {
 }
 SAFE_ENV_SUFFIXES = {".example", ".sample", ".template"}
 EXECUTABLE_FILES = {
-    "start.command",
     "tools/build_release.py",
-    "总控台.app/Contents/MacOS/launcher",
 }
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"

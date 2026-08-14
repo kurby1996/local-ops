@@ -7,7 +7,7 @@
    ============================================================ */
 import { $, el, setText, setChildren, icon, state, fmtClock, taskExitStatus,
   openLayer, closeLayer, act, post, toast, escapeHtml, applyTheme,
-  taskNotificationsEnabled, toggleTaskNotifications } from './core.js';
+  taskNotificationsEnabled, toggleTaskNotifications, MOD_KEY, shortHome } from './core.js';
 import { openAppModal, openLogs, openConsoleLog, openConfirm } from './overlays.js';
 import { configuredPort } from './ports.js';
 
@@ -314,7 +314,7 @@ function renderTips(data) {
   } else if (data.degraded) {
     text = '当前处于降级模式，部分组件数据可能不完整；可尝试重启总控台恢复。';
   } else {
-    text = '所有服务运行正常。小技巧：按 ⌘K 打开命令面板，可以快速启动、停止任意应用。';
+    text = '所有服务运行正常。小技巧：按 ' + MOD_KEY + 'K 打开命令面板，可以快速启动、停止任意应用。';
   }
   setText(tipsText, text);
   tipsAction.hidden = !actionable;
@@ -424,6 +424,8 @@ function syncSettings() {
   setText($('#setVersion'), d.version ? 'v' + d.version : '—');
   setText($('#setPort'), d.consolePort ? ':' + d.consolePort : '—');
   setText($('#setCwd'), d.consoleCwd || '—');
+  const dataDir = $('#setDataDir');
+  if (dataDir) setText(dataDir, shortHome(d.dataDir) || d.dataDir || '—');
 }
 
 export function openSettingsCenter() {

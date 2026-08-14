@@ -32,8 +32,7 @@ node 101 user 1u IPv6 0x0 0t0 TCP [::1]:5173 (LISTEN)
 node 202 user 2u IPv4 0x0 0t0 TCP 127.0.0.1:8000 (LISTEN)
 node 303 user 3u IPv6 0x0 0t0 TCP *:3000 (LISTEN)
 """
-        with mock.patch.object(server, "run_cmd", return_value=output):
-            listeners = server.scan_listeners()
+        listeners = server._parse_lsof_listeners(output)
 
         self.assertEqual(listeners[(101, 5173)], {"::1"})
         self.assertEqual(
@@ -42,6 +41,24 @@ node 303 user 3u IPv6 0x0 0t0 TCP *:3000 (LISTEN)
             server.listener_open_host(listeners, 8000, {202}), "127.0.0.1")
         self.assertEqual(
             server.listener_open_host(listeners, 3000, {303}), "127.0.0.1")
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows netstat 解析")
+class WindowsNetstatTests(unittest.TestCase):
+    def test_netstat_parser_keeps_ipv6_loopback_host(self):
+        import winops
+        output = """
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    127.0.0.1:8000         0.0.0.0:0              LISTENING       202
+  TCP    [::1]:5173             [::]:0                 LISTENING       101
+  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       303
+"""
+        listeners = winops.parse_netstat_listeners(output)
+        self.assertEqual(listeners[(101, 5173)], {"::1"})
+        self.assertEqual(listeners[(202, 8000)], {"127.0.0.1"})
+        self.assertEqual(listeners[(303, 3000)], {"*"})
+        self.assertEqual(
+            server.listener_open_host(listeners, 5173, {101}), "localhost")
 
 
 class OriginAttributionTests(unittest.TestCase):
@@ -68,6 +85,15 @@ class OriginAttributionTests(unittest.TestCase):
             (100, 90, "python3 -m http.server 8000"),
             (90, 80, "-zsh"),
             (80, 1, "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"),
+        )
+        origin = server.attribute_origin(100, table)
+        self.assertEqual(origin, {"label": "VS Code", "icon": "code"})
+
+    def test_windows_code_exe_is_named_vscode(self):
+        table = self.table(
+            (100, 90, "python -m http.server 8000"),
+            (90, 80, "cmd.exe /c npm run dev"),
+            (80, 1, r'"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe"'),
         )
         origin = server.attribute_origin(100, table)
         self.assertEqual(origin, {"label": "VS Code", "icon": "code"})
@@ -130,7 +156,7 @@ class OriginAttributionTests(unittest.TestCase):
 class ScriptCommandTests(unittest.TestCase):
     def test_script_extensions_choose_the_expected_runtime_and_quote_paths(self):
         cases = {
-            ".py": "python3",
+            ".py": server.python_cmd(),
             ".zsh": "/bin/zsh",
             ".sh": "/bin/bash",
             ".bash": "/bin/bash",
@@ -144,6 +170,7 @@ class ScriptCommandTests(unittest.TestCase):
                     parts = shlex.split(server.command_for_script(path))
                     self.assertEqual(parts, [runner, "--", path])
 
+    @unittest.skipIf(sys.platform == "win32", "执行位仅在 POSIX 上有意义")
     def test_executable_command_is_invoked_directly(self):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "nightly job.command")
@@ -162,6 +189,17 @@ class ScriptCommandTests(unittest.TestCase):
             self.assertEqual(
                 shlex.split(server.command_for_script(path)),
                 ["/bin/bash", "--", path])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows cmd 引用")
+    def test_windows_bat_uses_cmd_double_quotes_not_posix_singles(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "start hub.bat")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("@echo off\n")
+            command = server.command_for_script(path)
+        self.assertTrue(command.startswith("cmd /d /s /c "))
+        self.assertNotIn("'", command)
+        self.assertIn('"' + path + '"', command)
 
 
 class AppHealthTests(unittest.TestCase):
@@ -212,12 +250,22 @@ class AppHealthTests(unittest.TestCase):
                     {"command": command, "cwd": None})
                 self.assertFalse(health["blocking"])
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows 路径反斜杠")
+    def test_windows_python_path_is_not_eaten_by_posix_escaping(self):
+        command = sys.executable + " -m http.server 8765"
+        health = server.inspect_app_health({"command": command, "cwd": None})
+        self.assertFalse(health["blocking"], health)
+        tokens = server._simple_command_tokens(command)
+        self.assertGreaterEqual(len(tokens), 3)
+        self.assertEqual(tokens[1], "-m")
+
     def test_missing_runtime_is_blocking(self):
         with mock.patch.object(server.shutil, "which", return_value=None):
             health = server.inspect_app_health(
                 {"command": "definitely-not-installed --version", "cwd": None})
         self.assertEqual(health["issues"][0]["kind"], "runtime-missing")
 
+    @unittest.skipIf(sys.platform == "win32", "执行位仅在 POSIX 上有意义")
     def test_direct_script_requires_execute_permission_but_bash_script_does_not(self):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "job.command")
@@ -231,6 +279,7 @@ class AppHealthTests(unittest.TestCase):
         self.assertEqual(direct["issues"][0]["kind"], "script-not-executable")
         self.assertFalse(wrapped["blocking"])
 
+    @unittest.skipIf(sys.platform == "win32", "Windows 创建符号链接通常需要额外权限")
     def test_broken_script_symlink_is_unavailable(self):
         with tempfile.TemporaryDirectory() as td:
             link = os.path.join(td, "job.py")
@@ -243,7 +292,7 @@ class AppHealthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
             app = {"id": "deadbeef", "cwd": td,
-                   "command": "python3 -c 'raise SystemExit(130)'"}
+                   "command": '%s -c "raise SystemExit(130)"' % sys.executable}
             ok, error, proc, _, _ = server.start_app(app)
             self.assertTrue(ok, error)
             self.assertEqual(proc.wait(timeout=3), 130)
@@ -300,11 +349,12 @@ class ProjectDetectionTests(unittest.TestCase):
             static, static_error = server.detect_project(static_dir)
 
         self.assertIsNone(django_error)
-        self.assertEqual(django["candidates"][0]["command"], "python3 manage.py runserver")
+        self.assertEqual(django["candidates"][0]["command"],
+                         "%s manage.py runserver" % server.python_cmd())
         self.assertEqual(django["candidates"][0]["port"], 8000)
         self.assertIsNone(static_error)
         self.assertEqual(static["candidates"][0]["command"],
-                         "python3 -m http.server 8000")
+                         "%s -m http.server 8000" % server.python_cmd())
 
     def test_invalid_folder_returns_a_clear_error(self):
         result, error = server.detect_project("/path/that/does/not/exist")
@@ -374,9 +424,10 @@ class ConfigTests(unittest.TestCase):
                 backup = json.load(f)
             self.assertEqual(current["watchedKeywords"], ["node", "ffmpeg"])
             self.assertEqual(backup["watchedKeywords"], ["node"])
-            self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
-            self.assertEqual(oct(os.stat(path + ".bak").st_mode & 0o777),
-                             "0o600")
+            if sys.platform != "win32":
+                self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
+                self.assertEqual(oct(os.stat(path + ".bak").st_mode & 0o777),
+                                 "0o600")
 
     def test_load_falls_back_to_backup(self):
         with tempfile.TemporaryDirectory() as td:
@@ -483,10 +534,11 @@ class RuntimeStorageTests(unittest.TestCase):
             with open(os.path.join(logs, "deadbeef.log"), "rb") as f:
                 self.assertEqual(f.read(), b"log")
             self.assertTrue(os.path.isfile(os.path.join(legacy, "config.json")))
-            self.assertEqual(oct(os.stat(target).st_mode & 0o777), "0o700")
-            self.assertEqual(
-                oct(os.stat(os.path.join(target, "config.json")).st_mode & 0o777),
-                "0o600")
+            if sys.platform != "win32":
+                self.assertEqual(oct(os.stat(target).st_mode & 0o777), "0o700")
+                self.assertEqual(
+                    oct(os.stat(os.path.join(target, "config.json")).st_mode & 0o777),
+                    "0o600")
 
             # 已存在的目标绝不被旧项目目录二次覆盖。
             with open(os.path.join(legacy, "config.json"), "w",
@@ -572,8 +624,10 @@ class RuntimeStorageTests(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             log_path = os.path.join(logs, "console.log")
             with open(log_path, encoding="utf-8") as f:
-                self.assertEqual(f.read(), "launcher-log-ready\n")
-            self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
+                self.assertEqual(f.read().replace("\r\n", "\n").strip(),
+                                 "launcher-log-ready")
+            if sys.platform != "win32":
+                self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
 
 
 class ProcessIdentityTests(unittest.TestCase):
@@ -594,7 +648,9 @@ class ProcessIdentityTests(unittest.TestCase):
     def test_real_started_process_is_identified_and_stoppable(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
-            app = {"id": "deadbeef", "command": "sleep 20", "cwd": td}
+            app = {"id": "deadbeef",
+                   "command": '%s -c "import time; time.sleep(20)"' % sys.executable,
+                   "cwd": td}
             ok, error, proc, pgid, token = server.start_app(app)
             self.assertTrue(ok, error)
             tracked = dict(app, lastPid=proc.pid, lastPgid=pgid, runToken=token)
@@ -611,7 +667,7 @@ class ProcessIdentityTests(unittest.TestCase):
             finally:
                 if proc.poll() is None:
                     try:
-                        os.killpg(proc.pid, signal.SIGKILL)
+                        server.stop_pid_tree(proc.pid, server.SIGKILL)
                     except OSError:
                         pass
                     proc.wait(timeout=3)
@@ -814,9 +870,14 @@ class LaunchEnvironmentTests(unittest.TestCase):
             env = server.build_launch_env("secret", {"PATH": "/usr/bin:/bin"})
 
         paths = env["PATH"].split(os.pathsep)
-        self.assertIn("/Users/example/.local/bin", paths)
-        self.assertIn("/usr/local/bin", paths)
-        self.assertIn("/opt/homebrew/bin", paths)
+        local_bin = os.path.join("/Users/example", ".local", "bin")
+        self.assertIn(local_bin, paths)
+        if sys.platform == "win32":
+            self.assertTrue(any("nodejs" in path.lower() or "npm" in path.lower()
+                                for path in paths))
+        else:
+            self.assertIn("/usr/local/bin", paths)
+            self.assertIn("/opt/homebrew/bin", paths)
         self.assertIn("/Users/example/.nvm/versions/node/v22/bin", paths)
         self.assertEqual(len(paths), len(set(paths)))
         self.assertEqual(env[server.RUN_TOKEN_ENV], "secret")

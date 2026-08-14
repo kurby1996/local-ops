@@ -8,7 +8,6 @@ API 契约与实现要点见 AGENTS.md。
 """
 
 import glob
-import fcntl
 import functools
 import errno
 import json
@@ -31,12 +30,22 @@ import webbrowser
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+if sys.platform != "win32":
+    raise RuntimeError("总控台当前仅支持 Windows 10/11")
+
+import winops
+
+IS_WINDOWS = True
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSION_PATH = os.path.join(BASE_DIR, "VERSION")
 LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")
-DEFAULT_DATA_DIR = os.path.expanduser(
-    "~/Library/Application Support/总控台")
-DEFAULT_LOGS_DIR = os.path.expanduser("~/Library/Logs/总控台")
+DEFAULT_DATA_DIR = os.path.join(
+    os.environ.get("APPDATA") or os.path.expanduser("~\\AppData\\Roaming"),
+    "总控台")
+DEFAULT_LOGS_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local"),
+    "总控台", "Logs")
 
 
 def resolve_runtime_dir(name, default):
@@ -104,9 +113,10 @@ APP_STOP_TIMEOUT_SEC = 5.0
 RUN_TOKEN_ENV = "CONSOLE_RUN_TOKEN"
 RUN_TOKEN_ARG_PREFIX = "console-run:"
 TASK_CANCELED_EXIT_CODE = 130
+SIGKILL = getattr(signal, "SIGKILL", 9)
 
 SELF_PID = os.getpid()
-SELF_UID = os.getuid()
+SELF_UID = winops.CURRENT_USER_UID if IS_WINDOWS else os.getuid()
 ICON_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".ico")
 LOG = logging.getLogger("console")
 LOG_LOCK = threading.RLock()
@@ -222,7 +232,7 @@ def _install_migrated_directory(target, populate):
     if os.path.lexists(target):
         return False
     parent = os.path.dirname(target) or "."
-    # parent 可能是用户共用的 ~/Library/Application Support，
+    # parent 可能是用户共用的 AppData，
     # 只确保存在，不擅自改它的现有权限。
     os.makedirs(parent, mode=0o700, exist_ok=True)
     staging = tempfile.mkdtemp(prefix=".console-migration-", dir=parent)
@@ -542,38 +552,11 @@ def acquire_instance_lock(path=INSTANCE_LOCK_PATH):
     :9600/:9601 would still update the same config.  flock ties exclusivity to
     this data directory and is released automatically if the process crashes.
     """
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, mode=0o700, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    lock_file = os.fdopen(fd, "r+", encoding="ascii")
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as e:
-        lock_file.close()
-        if e.errno in (errno.EACCES, errno.EAGAIN):
-            return None
-        raise
-    try:
-        os.fchmod(lock_file.fileno(), 0o600)
-        lock_file.seek(0)
-        lock_file.truncate()
-        lock_file.write("%d\n" % SELF_PID)
-        lock_file.flush()
-        os.fsync(lock_file.fileno())
-    except OSError:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        lock_file.close()
-        raise
-    return lock_file
+    return winops.acquire_instance_lock(path, SELF_PID)
 
 
 def release_instance_lock(lock_file):
-    if lock_file is None:
-        return
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-    finally:
-        lock_file.close()
+    winops.release_instance_lock(lock_file)
 
 
 # ---------------------------------------------------------------- 子进程与解析
@@ -616,13 +599,8 @@ def _to_float(tok, default=0.0):
         return default
 
 
-def scan_listeners():
-    """lsof 监听快照 → {(pid, port): {bind_host, ...}}。
-
-    字典仍可像旧集合一样迭代/判断 ``(pid, port)``，同时保留监听地址，
-    供前端区分仅监听 ``::1`` 的服务（需通过 localhost 打开）。
-    """
-    out = run_cmd(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"])
+def _parse_lsof_listeners(out):
+    """解析 ``lsof -iTCP -sTCP:LISTEN`` 输出。"""
     found = {}
     for line in out.splitlines():
         if not line or line.startswith("COMMAND"):
@@ -649,6 +627,15 @@ def scan_listeners():
             continue
         found.setdefault((pid, port), set()).add(bind_host or "")
     return found
+
+
+def scan_listeners():
+    """监听快照 → {(pid, port): {bind_host, ...}}。
+
+    字典仍可像旧集合一样迭代/判断 ``(pid, port)``，同时保留监听地址，
+    供前端区分仅监听 ``::1`` 的服务（需通过 localhost 打开）。
+    """
+    return winops.scan_listeners()
 
 
 def listener_open_host(listeners, port, pids=None):
@@ -680,97 +667,29 @@ def listener_open_host(listeners, port, pids=None):
 
 
 def ps_snapshot(pids=None, with_uid=True):
-    """批量进程信息 → {pid: {"uid","comm","args","cpu","mem","etime"}}。
-
-    pids=None 表示全部进程（ps -ax）。解析：左边固定列 pid[/uid]/etime/cpu/mem，
-    其余部分（可含空格）即 comm；args 单独一次 ps 取。
-    注意：不能用 `comm=` 抑制表头——macOS ps 会把空表头列压到 16 字节截断
-    内容；保留表头后解析时跳过表头行即可（首列非数字的行）。
-    """
-    base = ["ps"]
-    if pids is None:
-        base.append("-ax")
-    else:
-        pids = [int(p) for p in pids]
-        if not pids:
-            return {}
-        base += ["-p", ",".join(str(p) for p in pids)]
-    # comm 必须放在最后一列：macOS ps 只保证最后一列不被定宽截断
-    # （comm 在中间列时会被压成约 16 字节，长路径被砍断）。
-    fields = ["pid"] + (["uid"] if with_uid else []) + \
-             ["etime", "%cpu", "%mem", "comm"]
-    out1 = run_cmd(base + ["-o", ",".join(fields)])
-    out2 = run_cmd(base + ["-o", "pid,args"])
-
-    snap = {}
-    fixed = 5 if with_uid else 4  # pid [uid] etime cpu mem 之后的都是 comm
-    for line in out1.splitlines():
-        toks = line.split()
-        if len(toks) < fixed + 1:
-            continue
-        try:
-            pid = int(toks[0])
-        except ValueError:
-            continue  # 表头行
-        i = 1
-        entry = {"args": ""}
-        if with_uid:
-            try:
-                entry["uid"] = int(toks[1])
-            except ValueError:
-                entry["uid"] = -1
-            i = 2
-        entry["etime"] = parse_etime(toks[i])
-        entry["cpu"] = _to_float(toks[i + 1])
-        entry["mem"] = _to_float(toks[i + 2])
-        entry["comm"] = " ".join(toks[i + 3:])
-        snap[pid] = entry
-    for line in out2.splitlines():
-        toks = line.split(None, 1)
-        if not toks:
-            continue
-        try:
-            pid = int(toks[0])
-        except ValueError:
-            continue
-        if pid in snap:
-            snap[pid]["args"] = toks[1] if len(toks) > 1 else ""
-    return snap
+    """批量进程信息 → {pid: {"uid","comm","args","cpu","mem","etime"}}。"""
+    return winops.ps_snapshot(pids, with_uid=with_uid)
 
 
 def lsof_cwds(pids):
-    """lsof -a -p <pids> -d cwd -Fn → {pid: cwd}。"""
+    """进程工作目录 → {pid: cwd}。"""
     pids = [int(p) for p in pids]
     if not pids:
         return {}
-    out = run_cmd(["lsof", "-a", "-p", ",".join(str(p) for p in pids),
-                   "-d", "cwd", "-Fn"])
-    result = {}
-    cur = None
-    for line in out.splitlines():
-        if line.startswith("p"):
-            try:
-                cur = int(line[1:])
-            except ValueError:
-                cur = None
-        elif line.startswith("n") and cur is not None:
-            result[cur] = line[1:]
-    return result
+    return winops.process_cwds(pids)
 
 
 def pid_alive(pid):
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except PermissionError:
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
+    return winops.pid_alive(pid)
 
 
 # ---------------------------------------------------------------- 状态构建
 
 SYSTEM_PATH_PREFIXES = ("/usr/libexec/", "/usr/sbin/", "/sbin/", "/System/", "/usr/lib/")
+SYSTEM_PATH_PREFIXES_WIN = (
+    "\\windows\\system32\\", "\\windows\\syswow64\\", "\\windows\\systemapps\\",
+    "\\windows\\winsxs\\", "c:\\windows\\",
+)
 
 # 开发服务关键词：命中 name/args 时优先归为 "mine"（覆盖 .app 规则，
 # 例如 ollama 守护进程在 Ollama.app 内、Docker 在 Docker.app 内）
@@ -792,6 +711,13 @@ def classify_group(key, name, comm, args, cwd, promoted):
         return "background"
     if comm.startswith(SYSTEM_PATH_PREFIXES):
         return "background"
+    comm_l = comm.replace("/", "\\").lower()
+    cwd_l = (cwd or "").replace("/", "\\").lower()
+    if any(prefix in comm_l or comm_l.startswith(prefix.lstrip("\\"))
+           for prefix in SYSTEM_PATH_PREFIXES_WIN):
+        return "background"
+    if comm_l.startswith("c:\\windows\\") or cwd_l.startswith("c:\\windows\\"):
+        return "background"
     if "/Library/Containers/" in comm or "/Library/Containers/" in (cwd or ""):
         return "background"
     return "mine"
@@ -804,7 +730,7 @@ def project_name(cwd):
     """从工作目录推断项目名（最后一段目录名），无有效 cwd 时返回 None。"""
     if not cwd:
         return None
-    cwd = cwd.rstrip("/")
+    cwd = cwd.rstrip("/\\")
     if not cwd or cwd == "/" or cwd == HOME_DIR:
         return None
     return os.path.basename(cwd) or None
@@ -819,6 +745,8 @@ _ORIGIN_SKIP_NAMES = {
     "zsh", "bash", "sh", "dash", "fish", "login", "su", "sudo", "env",
     "command", "xargs", "nohup", "setsid", "script", "expect", "caffeinate",
     "launchd",
+    "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+    "conhost", "conhost.exe", "openconsole", "openconsole.exe",
     "npm", "npx", "pnpm", "yarn", "corepack", "make", "just",
     "node", "tsx", "nodemon", "deno", "bun", "bunx",
     "python", "python3", "uv", "poetry", "pip", "pipx",
@@ -867,6 +795,18 @@ _ORIGIN_APP_ALIASES = {
     "docker": ("Docker", "package"),
     "ollama": ("Ollama", "package"),
     "obsidian": ("Obsidian", "package"),
+    "code.exe": ("VS Code", "code"),
+    "code - insiders.exe": ("VS Code", "code"),
+    "cursor.exe": ("Cursor", "code"),
+    "trae.exe": ("Trae", "code"),
+    "windsurf.exe": ("Windsurf", "code"),
+    "windowsterminal.exe": ("Windows Terminal", "terminal"),
+    "wt.exe": ("Windows Terminal", "terminal"),
+    "idea64.exe": ("IDEA", "code"),
+    "pycharm64.exe": ("PyCharm", "code"),
+    "webstorm64.exe": ("WebStorm", "code"),
+    "devenv.exe": ("Visual Studio", "code"),
+    "windows terminal.exe": ("Windows Terminal", "terminal"),
 }
 _ORIGIN_BUNDLE_RE = re.compile(r"/([^/]+)\.app/Contents/MacOS/", re.I)
 
@@ -875,7 +815,9 @@ _ORIGIN_MULTIPLEXERS = {"tmux": "tmux", "screen": "screen"}
 
 
 def origin_snapshot():
-    """ps -axo pid=,ppid=,args → {pid: (ppid, args)}，供来源溯源。"""
+    """pid → (ppid, args)，供来源溯源。"""
+    if IS_WINDOWS:
+        return winops.origin_snapshot()
     table = {}
     for line in run_cmd(["ps", "-axo", "pid=,ppid=,args"]).splitlines():
         toks = line.split(None, 2)
@@ -887,6 +829,20 @@ def origin_snapshot():
             continue
         table[pid] = (ppid, toks[2] if len(toks) > 2 else "")
     return table
+
+
+def _origin_basename(args):
+    """从命令行提取可执行文件基名，兼容引号路径与 Windows 反斜杠。"""
+    if not args:
+        return ""
+    text = args.strip()
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        first = text[1:end] if end > 0 else text.split()[0]
+    else:
+        first = text.split()[0] if text.split() else ""
+    first = first.strip().strip('"').lstrip("-")
+    return os.path.basename(first.replace("\\", "/"))
 
 
 def attribute_origin(pid, table):
@@ -922,12 +878,17 @@ def attribute_origin(pid, table):
             label, icon = _ORIGIN_APP_ALIASES.get(
                 app_name.casefold(), (app_name, "package"))
             return {"label": label, "icon": icon}
-        base = os.path.basename(
-            parent_args.split()[0]).lstrip("-") if parent_args.split() else ""
-        if base in _ORIGIN_MULTIPLEXERS:
-            return {"label": _ORIGIN_MULTIPLEXERS[base], "icon": "terminal"}
-        if base and base not in _ORIGIN_SKIP_NAMES and candidate is None:
-            candidate = {"label": base, "icon": "package"}
+        base = _origin_basename(parent_args)
+        alias = _ORIGIN_APP_ALIASES.get(base.casefold())
+        if alias:
+            return {"label": alias[0], "icon": alias[1]}
+        base_key = base.casefold()
+        base_stem = base_key[:-4] if base_key.endswith(".exe") else base_key
+        if base_stem in _ORIGIN_MULTIPLEXERS:
+            return {"label": _ORIGIN_MULTIPLEXERS[base_stem], "icon": "terminal"}
+        if (base and base_key not in _ORIGIN_SKIP_NAMES
+                and base_stem not in _ORIGIN_SKIP_NAMES and candidate is None):
+            candidate = {"label": base_stem or base, "icon": "package"}
         cur = ppid
     return candidate
 
@@ -1004,7 +965,7 @@ def build_watched(keywords):
         if pid == SELF_PID or info.get("uid") != SELF_UID:
             continue
         name = os.path.basename(info.get("comm") or "") or "?"
-        if name in ("ps", "lsof"):
+        if name.lower() in ("ps", "lsof", "netstat.exe", "netstat"):
             continue
         args = info.get("args") or ""
         args_lower = args.casefold()
@@ -1021,9 +982,9 @@ def build_watched(keywords):
 
 
 def pgid_members_map():
-    """ps -axo pid=,pgid= → {pgid: [pid, ...]}。
-    进程退出后其子孙仍保留原 pgid（被 launchd 收养也不变），
-    因此按 pgid 能找到「脚本把服务放后台后自己退出」的存活成员。"""
+    """进程组成员：POSIX 用 pgid；Windows 用进程树（根 PID → 子孙）。"""
+    if IS_WINDOWS:
+        return winops.pgid_members_map()
     groups = {}
     for line in run_cmd(["ps", "-axo", "pid=,pgid="]).splitlines():
         parts = line.split()
@@ -1042,7 +1003,10 @@ def _managed_candidates(app, groups):
     pgid = app.get("lastPgid") or app.get("lastPid")
     if not isinstance(token, str) or not token or not isinstance(pgid, int) or pgid <= 0:
         return set()
-    return set(groups.get(pgid, []))
+    members = set(groups.get(pgid, []))
+    if IS_WINDOWS:
+        members.update(winops.job_pids(token))
+    return members
 
 
 def managed_process_index(apps, groups=None):
@@ -1073,6 +1037,9 @@ def managed_process_index(apps, groups=None):
             if snap.get(pid, {}).get("uid") == SELF_UID)
         controller_found = bool(marker and any(
             marker in snap.get(pid, {}).get("args", "") for pid in current_user))
+        if (not controller_found and IS_WINDOWS and token
+                and winops.job_pids(token)):
+            controller_found = True
         # 随机标记在进程组的常驻外层 shell 上；校验后整组均为受控后代。
         result[app.get("id")] = current_user if controller_found else []
     return result, snap, groups
@@ -1301,6 +1268,10 @@ def build_state(cfg, console_port, config_health=None):
         "configHealth": dict(config_health or {}),
         "uiTheme": cfg.get("uiTheme") or DEFAULT_UI_THEME,
         "themes": list_themes(),
+        "dataDir": DATA_DIR,
+        "logsDir": LOGS_DIR,
+        "platform": "windows" if IS_WINDOWS else (
+            "darwin" if sys.platform == "darwin" else sys.platform),
     }
 
 
@@ -1340,9 +1311,9 @@ def build_health(cfg):
                         ("logs", LOGS_DIR)):
         if not os.path.isdir(path):
             issues.append("%s 目录不存在" % label)
-        elif not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+        elif not os.access(path, os.R_OK | os.W_OK | (os.X_OK if not IS_WINDOWS else os.R_OK)):
             issues.append("%s 目录不可读写" % label)
-        else:
+        elif not IS_WINDOWS:
             try:
                 mode = os.lstat(path).st_mode
                 if stat.S_ISLNK(mode) or mode & 0o077:
@@ -1360,7 +1331,7 @@ def build_health(cfg):
         except OSError as e:
             issues.append("无法检查 %s: %s" % (label, e))
             continue
-        if not stat.S_ISREG(mode) or mode & 0o077:
+        if not stat.S_ISREG(mode) or (not IS_WINDOWS and mode & 0o077):
             issues.append("%s 文件权限不是 0600" % label)
     degraded = bool(issues)
     snapshot = cfg.snapshot()
@@ -1411,6 +1382,8 @@ def list_themes():
 
 def process_uid(pid):
     """返回进程 uid；进程不存在返回 None。"""
+    if IS_WINDOWS:
+        return winops.process_uid(pid)
     out = run_cmd(["ps", "-o", "uid=", "-p", str(int(pid))])
     toks = out.split()
     if not toks:
@@ -1430,6 +1403,8 @@ def kill_process(pid, force):
         return False, "进程不存在"
     if uid != SELF_UID:
         return False, "只能结束当前用户的进程"
+    if IS_WINDOWS:
+        return winops.kill_process(pid, force)
     sig = signal.SIGKILL if force else signal.SIGTERM
     try:
         os.kill(pid, sig)
@@ -1450,6 +1425,9 @@ def stop_pid_tree(pid, sig=signal.SIGTERM):
     failures must never be swallowed: callers use them to retain management
     identity instead of creating an orphan process.
     """
+    if IS_WINDOWS:
+        force = int(sig) == int(SIGKILL)
+        return winops.stop_process_tree(int(pid), force=force)
     try:
         os.killpg(int(pid), sig)
         return True, None
@@ -1473,32 +1451,65 @@ def app_alive_sign(app, listeners=None):
 def build_launch_env(token, environ=None):
     """构建无 Terminal 启动时仍可找到常见开发工具的环境。
 
-    Finder/LSUIElement 启动的应用通常只有系统 PATH，不会读取用户 shell 配置；
-    因此显式补入 Homebrew、npm/pnpm、Volta、NVM、fnm 等常见目录。
+    无窗口启动通常只有系统 PATH，不会读取用户 shell 配置；
+    因此显式补入常见 Node、Python、Git 目录。
     """
     env = dict(os.environ if environ is None else environ)
     home = os.path.expanduser("~")
-    preferred = [
-        os.path.join(home, ".local", "bin"),
-        os.path.join(home, ".volta", "bin"),
-        os.path.join(home, ".bun", "bin"),
-        os.path.join(home, "Library", "pnpm"),
-        os.path.join(home, ".asdf", "shims"),
-        "/opt/homebrew/bin", "/opt/homebrew/sbin",
-        "/usr/local/bin", "/usr/local/sbin",
-    ]
-    preferred.extend(sorted(
-        glob.glob(os.path.join(home, ".nvm", "versions", "node", "*", "bin")),
-        reverse=True))
-    preferred.extend(sorted(
-        glob.glob(os.path.join(home, ".fnm", "node-versions", "*", "installation", "bin")),
-        reverse=True))
-    preferred.extend((env.get("PATH") or "").split(os.pathsep))
-    preferred.extend(("/usr/bin", "/bin", "/usr/sbin", "/sbin"))
+    if IS_WINDOWS:
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        roaming = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+        pf = os.environ.get("ProgramFiles") or r"C:\Program Files"
+        pf86 = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
+        preferred = [
+            os.path.join(home, ".local", "bin"),
+            os.path.join(home, ".volta", "bin"),
+            os.path.join(home, ".bun", "bin"),
+            os.path.join(home, ".cargo", "bin"),
+            os.path.join(home, "go", "bin"),
+            os.path.join(roaming, "npm"),
+            os.path.join(roaming, "fnm"),
+            os.path.join(local, "fnm"),
+            os.path.join(local, "Programs", "Microsoft VS Code", "bin"),
+            os.path.join(local, "Microsoft", "WinGet", "Links"),
+            os.path.join(pf, "nodejs"),
+            os.path.join(pf86, "nodejs"),
+            os.path.join(pf, "Git", "cmd"),
+            os.path.join(pf, "Git", "bin"),
+        ]
+        preferred.extend(sorted(
+            glob.glob(os.path.join(home, ".nvm", "versions", "node", "*", "*")),
+            reverse=True))
+        preferred.extend((env.get("PATH") or "").split(os.pathsep))
+        system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+        preferred.extend((
+            os.path.join(system_root, "System32"),
+            system_root,
+            os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0"),
+        ))
+        env.setdefault("PNPM_HOME", os.path.join(local, "pnpm"))
+    else:
+        preferred = [
+            os.path.join(home, ".local", "bin"),
+            os.path.join(home, ".volta", "bin"),
+            os.path.join(home, ".bun", "bin"),
+            os.path.join(home, "Library", "pnpm"),
+            os.path.join(home, ".asdf", "shims"),
+            "/opt/homebrew/bin", "/opt/homebrew/sbin",
+            "/usr/local/bin", "/usr/local/sbin",
+        ]
+        preferred.extend(sorted(
+            glob.glob(os.path.join(home, ".nvm", "versions", "node", "*", "bin")),
+            reverse=True))
+        preferred.extend(sorted(
+            glob.glob(os.path.join(home, ".fnm", "node-versions", "*", "installation", "bin")),
+            reverse=True))
+        preferred.extend((env.get("PATH") or "").split(os.pathsep))
+        preferred.extend(("/usr/bin", "/bin", "/usr/sbin", "/sbin"))
+        env.setdefault("PNPM_HOME", os.path.join(home, "Library", "pnpm"))
     seen = set()
     env["PATH"] = os.pathsep.join(
         path for path in preferred if path and not (path in seen or seen.add(path)))
-    env.setdefault("PNPM_HOME", os.path.join(home, "Library", "pnpm"))
     env[RUN_TOKEN_ENV] = token
     return env
 
@@ -1512,25 +1523,27 @@ def start_app(app):
     try:
         log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND,
                          0o600)
-        os.fchmod(log_fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(log_fd, 0o600)
         logf = os.fdopen(log_fd, "ab", buffering=0)
     except OSError as e:
         return False, "无法打开日志文件: %s" % e, None, None, None
     token = secrets.token_urlsafe(24)
     env = build_launch_env(token)
     marker = RUN_TOKEN_ARG_PREFIX + token
-    # 外层 shell 在 argv[0] 中持有随机标记并等待内层；内层等待用户命令
-    # 留下的后台作业。因此进程组既可验证，也不会因启动脚本过早退出而失去锚点。
-    outer_script = '/bin/bash -c "$1"\nconsole_status=$?\nexit "$console_status"'
-    inner_script = (app["command"] +
-                    '\nconsole_status=$?\nwait\nexit "$console_status"')
     try:
         header = "\n===== 启动于 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")
         logf.write(header.encode("utf-8"))
+        env["CONSOLE_SUPERVISE_CMD"] = app["command"]
+        env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            ["/bin/bash", "-c", outer_script, marker, inner_script],
-            cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
-            start_new_session=True, env=env)
+            [sys.executable, "-u", os.path.abspath(__file__),
+             "--supervise", marker],
+            cwd=cwd, stdout=logf, stderr=subprocess.STDOUT, env=env,
+            creationflags=winops.popen_creationflags(hidden=True))
+        job = winops.create_named_job(token)
+        if job:
+            winops.assign_process_to_job(job, proc.pid)
     except Exception as e:
         logf.close()
         return False, "启动失败: %s" % e, None, None, None
@@ -1634,39 +1647,43 @@ def stop_app_for_update(cfg, app, timeout=5.0):
 
 
 def pick_path(what):
-    """macOS 原生文件/目录选择框（osascript）。返回 (path|None, canceled)。"""
-    if what == "dir":
-        script = 'POSIX path of (choose folder with prompt "选择工作目录")'
-    else:
-        script = 'POSIX path of (choose file with prompt "选择批处理脚本")'
-    try:
-        r = subprocess.run(["osascript", "-e", script],
-                           capture_output=True, text=True, timeout=180)
-    except Exception:
-        return None, False
-    if r.returncode != 0:  # 用户按了取消（"User canceled."）
-        return None, True
-    return r.stdout.strip().rstrip("/") or None, False
+    """系统原生文件/目录选择框。返回 (path|None, canceled)。"""
+    return winops.pick_path(what)
+
+
+def python_cmd():
+    return "python"
+
+
+def shell_quote(path):
+    """按当前平台引用路径：POSIX 用单引号，Windows cmd 用双引号。"""
+    if not IS_WINDOWS:
+        return shlex.quote(path)
+    return '"%s"' % str(path).replace('"', '""')
 
 
 def command_for_script(path):
-    """按脚本类型生成可直接保存的 shell 命令，并安全引用任意文件名。"""
+    """按脚本类型生成可直接保存的命令，并安全引用任意文件名。"""
     normalized = os.path.abspath(os.path.expanduser(str(path)))
-    quoted = shlex.quote(normalized)
+    quoted = shell_quote(normalized)
     suffix = os.path.splitext(normalized)[1].lower()
     if suffix == ".py":
-        return "python3 -- %s" % quoted
+        return "%s -- %s" % (python_cmd(), quoted)
+    if suffix == ".ps1":
+        return "powershell -NoProfile -ExecutionPolicy Bypass -File %s" % quoted
+    if suffix in (".bat", ".cmd"):
+        return "cmd /d /s /c %s" % quoted
     if suffix == ".zsh":
         return "/bin/zsh -- %s" % quoted
     if suffix in (".sh", ".bash"):
         return "/bin/bash -- %s" % quoted
-    if os.access(normalized, os.X_OK):
+    if not IS_WINDOWS and os.access(normalized, os.X_OK):
         return quoted
     # .command 常见于 Finder 双击脚本；没有执行位时仍可明确交给 bash。
     return "/bin/bash -- %s" % quoted
 
 
-SCRIPT_SUFFIXES = {".py", ".sh", ".bash", ".zsh", ".command"}
+SCRIPT_SUFFIXES = {".py", ".sh", ".bash", ".zsh", ".command", ".ps1", ".bat", ".cmd"}
 SHELL_BUILTINS = {
     ".", ":", "[", "alias", "break", "cd", "command", "continue", "echo",
     "eval", "exec", "exit", "export", "false", "printf", "pwd", "read",
@@ -1680,8 +1697,9 @@ def _simple_command_tokens(command):
     if not isinstance(command, str) or not command.strip():
         return []
     try:
+        text = command.replace("\\", "/") if IS_WINDOWS else command
         lexer = shlex.shlex(
-            command, posix=True, punctuation_chars="|&;<>()")
+            text, posix=True, punctuation_chars="|&;<>()")
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)
@@ -1720,14 +1738,15 @@ def _script_target(tokens, cwd):
     base = os.path.basename(executable)
     args = tokens[index + 1:]
 
-    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", base):
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", base) or base in {
+            "python.exe", "pythonw.exe"}:
         if "-m" in args or "-c" in args:
             return None, False, False
         if args and args[0] == "--":
             args = args[1:]
         candidate = next((arg for arg in args if not arg.startswith("-")), None)
         if candidate and (os.path.splitext(candidate)[1].lower() in SCRIPT_SUFFIXES
-                          or "/" in candidate):
+                          or _has_pathsep(candidate)):
             return (_resolve_command_path(candidate, cwd), False,
                     not os.path.isabs(os.path.expanduser(candidate)))
         return None, False, False
@@ -1741,16 +1760,23 @@ def _script_target(tokens, cwd):
             args = args[1:]
         candidate = next((arg for arg in args if not arg.startswith("-")), None)
         if candidate and (os.path.splitext(candidate)[1].lower() in SCRIPT_SUFFIXES
-                          or "/" in candidate):
+                          or _has_pathsep(candidate)):
             return (_resolve_command_path(candidate, cwd), False,
                     not os.path.isabs(os.path.expanduser(candidate)))
         return None, False, False
 
     suffix = os.path.splitext(executable)[1].lower()
-    if suffix in SCRIPT_SUFFIXES or "/" in executable:
+    if suffix in SCRIPT_SUFFIXES or _has_pathsep(executable):
         return (_resolve_command_path(executable, cwd), True,
                 not os.path.isabs(os.path.expanduser(executable)))
     return None, False, False
+
+
+def _has_pathsep(value):
+    if not value:
+        return False
+    return ("/" in value or "\\" in value
+            or (len(value) >= 2 and value[1] == ":"))
 
 
 def inspect_app_health(app):
@@ -1802,7 +1828,7 @@ def inspect_app_health(app):
                 "检查脚本权限，或重新选择一个可读取的脚本。",
                 "pick-script",
             )
-        elif direct and not os.access(script_path, os.X_OK):
+        elif direct and not IS_WINDOWS and not os.access(script_path, os.X_OK):
             add(
                 "script-not-executable", "脚本不可执行",
                 "直接运行的脚本没有执行权限：%s" % script_path,
@@ -1818,9 +1844,14 @@ def inspect_app_health(app):
     executable = tokens[index] if tokens and index < len(tokens) else ""
     executable_base = os.path.basename(executable)
     if executable and not direct and executable_base not in SHELL_BUILTINS:
-        if "/" in executable:
+        if (IS_WINDOWS and executable_base in {
+                "bash", "sh", "zsh", "cmd", "powershell", "pwsh"}
+                and script_path and (os.path.isfile(script_path) or not cwd_ok)):
+            runtime_ok = True
+        elif _has_pathsep(executable):
             runtime = _resolve_command_path(executable, cwd)
-            runtime_ok = os.path.isfile(runtime) and os.access(runtime, os.X_OK)
+            runtime_ok = os.path.isfile(runtime) and (
+                IS_WINDOWS or os.access(runtime, os.X_OK))
         else:
             runtime = executable
             runtime_ok = bool(shutil.which(
@@ -2027,12 +2058,13 @@ def detect_project(root):
     if requirements is not None:
         note_file("requirements.txt", requirements)
     py_deps = "\n".join(text for text in (pyproject, requirements) if text).lower()
-    python_runner = "uv run" if os.path.isfile(os.path.join(root, "uv.lock")) else "python3 -m"
+    python_runner = "uv run" if os.path.isfile(os.path.join(root, "uv.lock")) else (
+        python_cmd() + " -m")
     if os.path.isfile(os.path.join(root, "uv.lock")):
         note_file("uv.lock")
     if os.path.isfile(os.path.join(root, "manage.py")):
         note_file("manage.py")
-        prefix = "uv run python" if python_runner == "uv run" else "python3"
+        prefix = "uv run python" if python_runner == "uv run" else python_cmd()
         add(prefix + " manage.py runserver", "Django 开发服务器", "manage.py", 8000, 20)
     else:
         for module_file in ("app.py", "main.py", "server.py"):
@@ -2048,19 +2080,19 @@ def detect_project(root):
                 r"(?m)^\s*(?:import\s+flask\b|from\s+flask\b)", module_text)
             if "streamlit" in py_deps or imports_streamlit:
                 note_file(module_file, module_text)
-                prefix = "uv run" if python_runner == "uv run" else "python3 -m"
+                prefix = "uv run" if python_runner == "uv run" else python_cmd() + " -m"
                 add(prefix + " streamlit run " + module_file,
                     "Streamlit 应用", module_file, 8501, 22)
                 break
             if "fastapi" in py_deps or imports_fastapi:
                 note_file(module_file, module_text)
-                prefix = "uv run" if python_runner == "uv run" else "python3 -m"
+                prefix = "uv run" if python_runner == "uv run" else python_cmd() + " -m"
                 add(prefix + " uvicorn %s:app --reload" % module,
                     "FastAPI 开发服务器", module_file, 8000, 23)
                 break
             if "flask" in py_deps or imports_flask:
                 note_file(module_file, module_text)
-                prefix = "uv run" if python_runner == "uv run" else "python3 -m"
+                prefix = "uv run" if python_runner == "uv run" else python_cmd() + " -m"
                 add(prefix + " flask --app %s run --debug" % module,
                     "Flask 开发服务器", module_file, 5000, 24)
                 break
@@ -2085,18 +2117,30 @@ def detect_project(root):
         note_file("Cargo.toml")
         add("cargo run", "Rust 项目", "Cargo.toml", None, 61)
 
-    for script_name in ("start.command", "dev.command", "run.command", "start.sh", "dev.sh", "run.sh"):
+    script_candidates = (
+        "start.bat", "dev.bat", "run.bat",
+        "start.cmd", "dev.cmd", "start.ps1", "dev.ps1",
+        "start.sh", "dev.sh", "run.sh",
+    )
+    for script_name in script_candidates:
         if os.path.isfile(os.path.join(root, script_name)):
             note_file(script_name)
-            add("bash %s" % shlex.quote("./" + script_name),
-                "现有启动脚本", script_name, None, 70,
+            suffix = os.path.splitext(script_name)[1].lower()
+            if suffix in (".bat", ".cmd"):
+                cmd = "cmd /d /c %s" % shlex.quote(script_name)
+            elif suffix == ".ps1":
+                cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File %s" % (
+                    shlex.quote(script_name))
+            else:
+                cmd = "bash %s" % shlex.quote("./" + script_name)
+            add(cmd, "现有启动脚本", script_name, None, 70,
                 "也可以继续使用“选择脚本”手动指定")
             break
 
     # 纯静态站点最后兜底，避免把 Vite/Next 等项目误当成普通文件目录。
     if not candidates and os.path.isfile(os.path.join(root, "index.html")):
         note_file("index.html")
-        add("python3 -m http.server 8000", "静态网站预览", "index.html", 8000, 90)
+        add("%s -m http.server 8000" % python_cmd(), "静态网站预览", "index.html", 8000, 90)
 
     candidates.sort(key=lambda item: item.pop("_priority"))
     return {
@@ -2133,7 +2177,7 @@ def resolve_app_stop_target(app, listeners=None):
         return None, "受控进程组信息无效"
     legacy_pid = legacy_managed_pid(app, listeners)
     if legacy_pid:
-        if app.get("attached"):
+        if app.get("attached") and hasattr(os, "getpgid"):
             try:
                 pgid = os.getpgid(legacy_pid)
             except (ProcessLookupError, PermissionError, OSError):
@@ -2179,6 +2223,8 @@ def signal_app_stop(target, sig=signal.SIGTERM):
 
 def stop_target_alive(target, expected_uid=None):
     if target["kind"] == "group":
+        if IS_WINDOWS:
+            return bool(_current_user_group_members(target["id"]))
         try:
             os.killpg(target["id"], 0)
             return True
@@ -2188,6 +2234,12 @@ def stop_target_alive(target, expected_uid=None):
             return True
         except OSError:
             return True
+    if IS_WINDOWS:
+        if not pid_alive(target["id"]):
+            return False
+        if expected_uid is None:
+            expected_uid = process_uid(target["id"])
+        return expected_uid == SELF_UID
     try:
         os.kill(target["id"], 0)
         if expected_uid is None:
@@ -3849,33 +3901,15 @@ def find_console_instances():
 
 
 def _launcher_dialog(message):
-    script = """on run argv
-set messageText to item 1 of argv
-display dialog messageText with title "总控台" buttons {"取消", "重新启动", "打开控制台"} default button "打开控制台" cancel button "取消" with icon note
-return button returned of result
-end run"""
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", script, message], capture_output=True,
-            text=True, timeout=180)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return result.stdout.strip() if result.returncode == 0 else None
+    return winops.launcher_dialog(message)
 
 
 def _launcher_alert(message):
-    script = """on run argv
-display alert "总控台" message (item 1 of argv) as critical
-end run"""
-    try:
-        subprocess.run(["osascript", "-e", script, message],
-                       capture_output=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    winops.launcher_alert(message)
 
 
 def launcher_main():
-    """start.command 的无命令启动入口。"""
+    """start.bat / start.vbs 的启动入口。"""
     instances = find_console_instances()
     if not instances:
         try:
@@ -3926,10 +3960,17 @@ def launcher_main():
 
 def schedule_console_restart(server, preferred_port):
     """启动独立 helper，响应发出后关闭当前 HTTP 服务。"""
+    helper_kwargs = {"cwd": BASE_DIR}
+    if IS_WINDOWS:
+        helper_kwargs["creationflags"] = winops.detached_creationflags()
+        helper_kwargs["close_fds"] = False
+    else:
+        helper_kwargs["start_new_session"] = True
+        helper_kwargs["close_fds"] = True
     helper = subprocess.Popen(
         [sys.executable, os.path.abspath(__file__), "--restart-helper",
          str(SELF_PID), str(int(preferred_port))],
-        cwd=BASE_DIR, start_new_session=True, close_fds=True)
+        **helper_kwargs)
 
     def _shutdown():
         time.sleep(0.25)
@@ -3955,6 +3996,11 @@ def restart_helper(old_pid, preferred_port):
         return 1
     args = [sys.executable, os.path.abspath(__file__),
             "--preferred-port", str(int(preferred_port)), "--no-browser"]
+    if IS_WINDOWS:
+        subprocess.Popen(
+            args, cwd=BASE_DIR, close_fds=False,
+            creationflags=winops.detached_creationflags())
+        return 0
     os.execv(sys.executable, args)
     return 0
 
@@ -4002,7 +4048,8 @@ def redirect_console_output():
     path = os.path.join(LOGS_DIR, "console.log")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         for stream in (sys.stdout, sys.stderr):
             try:
                 stream.flush()
@@ -4046,8 +4093,30 @@ def main(preferred_port=None, open_browser=True, log_to_file=False):
         release_instance_lock(instance_lock)
 
 
+def supervise_main(marker):
+    """Windows 常驻包装进程：在 argv 中持有 run-token，并等待用户命令结束。"""
+    command = os.environ.get("CONSOLE_SUPERVISE_CMD") or ""
+    if not command:
+        sys.exit(2)
+    try:
+        child = subprocess.Popen(
+            command, shell=True, stdout=sys.stdout, stderr=sys.stderr,
+            env=os.environ)
+        code = child.wait()
+    except Exception as exc:
+        sys.stderr.write("启动失败: %s\n" % exc)
+        sys.exit(1)
+    if isinstance(code, int) and 0 <= code <= 255:
+        sys.exit(code)
+    sys.exit(1)
+
+
 if __name__ == "__main__":
-    if "--prepare-storage" in sys.argv:
+    if "--supervise" in sys.argv:
+        index = sys.argv.index("--supervise")
+        marker = sys.argv[index + 1] if index + 1 < len(sys.argv) else ""
+        supervise_main(marker)
+    elif "--prepare-storage" in sys.argv:
         # 供安装/诊断流程预先验证迁移和目录权限，不启动 HTTP。
         prepare_runtime_storage()
     elif "--launcher" in sys.argv:

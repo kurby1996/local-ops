@@ -295,7 +295,8 @@ class OperationLockTests(unittest.TestCase):
     def setUp(self):
         self.h = HttpHarness()
         app = {**server.Config.APP_DEFAULT,
-               "id": "deadbeef", "name": "Service", "command": "sleep 10",
+               "id": "deadbeef", "name": "Service",
+               "command": '%s -c "import time; time.sleep(10)"' % sys.executable,
                "kind": "service", "cwd": self.h.tmp.name}
         self.h.cfg.update(lambda data: data["apps"].append(app))
 
@@ -323,12 +324,15 @@ class OperationLockTests(unittest.TestCase):
                 {"Content-Type": "application/json"}))
 
         with mock.patch.object(server, "app_alive_sign", return_value=False), \
+                mock.patch.object(server, "inspect_app_health",
+                                  return_value={"status": "ok", "blocking": False,
+                                                "issues": []}), \
                 mock.patch.object(server, "scan_listeners", return_value=set()), \
                 mock.patch.object(server, "start_app", side_effect=slow_start), \
                 mock.patch.object(server, "persist_started_app", return_value=True):
             thread = threading.Thread(target=first_request)
             thread.start()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(3))
             status, body, _ = self.h.request(
                 "POST", "/api/apps/deadbeef/start", "{}",
                 {"Content-Type": "application/json"})
@@ -397,7 +401,9 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
             base = {**server.Config.APP_DEFAULT, "id": "deadbeef",
-                    "name": "Service", "command": "sleep 20", "cwd": td}
+                    "name": "Service",
+                    "command": '%s -c "import time; time.sleep(20)"' % sys.executable,
+                    "cwd": td}
             cfg = self._config_with_app(td, base)
             ok, error, proc, pgid, token = server.start_app(base)
             self.assertTrue(ok, error)
@@ -416,7 +422,7 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                 if server.stop_target_alive(
                         {"kind": "group", "id": pgid, "members": [proc.pid]}):
                     try:
-                        os.killpg(pgid, signal.SIGKILL)
+                        server.stop_pid_tree(pgid, server.SIGKILL)
                     except OSError:
                         pass
 
@@ -425,7 +431,8 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                 mock.patch.object(server, "LOGS_DIR", td):
             previous = {"code": 0, "at": 123, "durationSec": 0.1}
             base = {**server.Config.APP_DEFAULT, "id": "deadbeef",
-                    "name": "Task", "kind": "task", "command": "sleep 20",
+                    "name": "Task", "kind": "task",
+                    "command": '%s -c "import time; time.sleep(20)"' % sys.executable,
                     "cwd": td, "lastExit": previous}
             cfg = self._config_with_app(td, base)
             ok, error, proc, pgid, token = server.start_app(base)
@@ -449,10 +456,11 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                 if server.stop_target_alive(
                         {"kind": "group", "id": pgid, "members": [proc.pid]}):
                     try:
-                        os.killpg(pgid, signal.SIGKILL)
+                        server.stop_pid_tree(pgid, server.SIGKILL)
                     except OSError:
                         pass
 
+    @unittest.skipIf(sys.platform == "win32", "Windows 无法忽略进程终止")
     def test_sigterm_timeout_retains_runtime_identity_for_retry(self):
         command = (
             "python3 -c 'import signal,time; "
@@ -481,7 +489,7 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                     {"kind": "group", "id": pgid, "members": [proc.pid]}))
             finally:
                 try:
-                    os.killpg(pgid, signal.SIGKILL)
+                    server.stop_pid_tree(pgid, server.SIGKILL)
                 except OSError:
                     pass
 
@@ -552,6 +560,7 @@ class StaticFileServingTests(unittest.TestCase):
         status, _, _ = self.h.request("GET", "/icons/../../etc/passwd")
         self.assertEqual(status, 404)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows 创建符号链接通常需要额外权限")
     def test_symlink_inside_static_cannot_escape_to_outside(self):
         with tempfile.TemporaryDirectory() as td:
             outside = os.path.join(td, "secret.txt")

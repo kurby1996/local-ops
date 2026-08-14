@@ -45,7 +45,25 @@ export function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-export function shortHome(p) { return p ? p.replace(/^\/Users\/[^/]+/, '~') : ''; }
+export const IS_WIN = /Win/i.test(navigator.platform || '') || /Windows/i.test(navigator.userAgent || '');
+export const MOD_KEY = IS_WIN ? 'Ctrl+' : '⌘';
+export function pathDirname(p) {
+  const s = String(p || '');
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+  return i >= 0 ? s.slice(0, i) : '';
+}
+export function pathBasename(p) {
+  const s = String(p || '');
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+export function shortHome(p) {
+  if (!p) return '';
+  return String(p)
+    .replace(/^\/Users\/[^/]+/, '~')
+    .replace(/^\/home\/[^/]+/, '~')
+    .replace(/^[A-Za-z]:\\Users\\[^\\]+/i, '~');
+}
 export function truncateMiddle(s, max = 34) {
   if (!s) return '';
   if (s.length <= max) return s;

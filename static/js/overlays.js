@@ -4,7 +4,7 @@
    ============================================================ */
 import { $, el, setText, setChildren, icon, escapeHtml,
   post, put, del, act, toast, openLayer, closeLayer,
-  GLYPHS, findApp, bumpMutationEpoch } from './core.js';
+  GLYPHS, findApp, bumpMutationEpoch, pathDirname, pathBasename, IS_WIN } from './core.js';
 
 /* ---------------- DOM 引用 ---------------- */
 const appModalMask = $('#appModalMask'), appModal = $('#appModal'), appModalTitle = $('#appModalTitle');
@@ -38,12 +38,16 @@ export function getIconVer(id) { return iconVer.get(id) || 0; }
 
 /* 兼容尚未重启的旧后端；新后端会返回经过同样规则生成的 command。 */
 function shellQuotePath(path) {
+  if (IS_WIN) return '"' + String(path).replace(/"/g, '""') + '"';
   return "'" + String(path).replace(/'/g, "'\"'\"'") + "'";
 }
 function fallbackScriptCommand(path) {
   const quoted = shellQuotePath(path);
-  const suffix = (String(path).match(/(\.[^./]+)$/) || [])[1]?.toLowerCase();
-  if (suffix === '.py') return 'python3 -- ' + quoted;
+  const suffix = (String(path).match(/(\.[^./\\]+)$/) || [])[1]?.toLowerCase();
+  const py = IS_WIN ? 'python' : 'python3';
+  if (suffix === '.py') return py + ' -- ' + quoted;
+  if (suffix === '.ps1') return 'powershell -NoProfile -ExecutionPolicy Bypass -File ' + quoted;
+  if (suffix === '.bat' || suffix === '.cmd') return 'cmd /d /s /c ' + quoted;
   if (suffix === '.zsh') return '/bin/zsh -- ' + quoted;
   return '/bin/bash -- ' + quoted;
 }
@@ -565,10 +569,10 @@ export function initAppModal({ onAddService, onAddTask }) {
       if (!r || r.canceled || !r.path) return;  // 取消或失败均静默
       const p = r.path;
       fCmd.value = r.command || fallbackScriptCommand(p);
-      const dir = p.slice(0, p.lastIndexOf('/'));
+      const dir = pathDirname(p);
       if (dir && !fCwd.value.trim()) fCwd.value = dir;
       if (!fName.value.trim()) {
-        const base = p.split('/').pop().replace(/\.(command|sh|bash|zsh|py)$/i, '');
+        const base = pathBasename(p).replace(/\.(command|sh|bash|zsh|py|ps1|bat|cmd)$/i, '');
         if (base) fName.value = base;
       }
       fCmd.classList.remove('invalid');
@@ -583,7 +587,7 @@ export function initAppModal({ onAddService, onAddTask }) {
     }
   });
 
-  /* 浏览工作目录（macOS 原生选择框） */
+  /* 浏览工作目录（系统原生选择框） */
   btnPickCwd.addEventListener('click', async () => {
     btnPickCwd.disabled = true;
     try {

@@ -12,7 +12,6 @@ import ast
 import hashlib
 import json
 import os
-import plistlib
 import re
 import shutil
 import subprocess
@@ -22,7 +21,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "static"
-INFO_PLIST = ROOT / "总控台.app" / "Contents" / "Info.plist"
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -111,14 +109,14 @@ def check_required_files() -> str:
         "requirements-dev.txt",
         "Makefile",
         "server.py",
-        "start.command",
+        "winops.py",
+        "start.bat",
+        "start.vbs",
         "tests/test_server.py",
         "docs/screenshots/ops-launchpad.jpg",
         "docs/screenshots/ops-services.jpg",
         "static/index.html",
         "static/app.js",
-        "总控台.app/Contents/Info.plist",
-        "总控台.app/Contents/MacOS/launcher",
     )
     missing = [name for name in required if not (ROOT / name).is_file()]
     require(not missing, "缺少必要文件: " + ", ".join(missing))
@@ -135,7 +133,6 @@ def check_asset_provenance() -> str:
         for item in sorted(folder.rglob("*"))
         if item.is_file()
     ]
-    tracked.append(ROOT / "总控台.app" / "Contents" / "Resources" / "AppIcon.icns")
     missing = [
         item.relative_to(ROOT).as_posix()
         for item in tracked
@@ -195,23 +192,11 @@ def read_version() -> str:
 
 def check_version() -> str:
     version = read_version()
-    with INFO_PLIST.open("rb") as handle:
-        info = plistlib.load(handle)
-    short = str(info.get("CFBundleShortVersionString", "")).strip()
-    build = str(info.get("CFBundleVersion", "")).strip()
-    version_major_minor = tuple(version.split("-", 1)[0].split(".")[:2])
-    short_parts = tuple(short.split(".")[:2])
-    require(
-        len(short_parts) == 2 and short_parts == version_major_minor,
-        f"Info.plist 版本 {short!r} 与 VERSION {version!r} 的 major.minor 不一致",
-    )
-    require(build.isdigit() and int(build) > 0, "CFBundleVersion 必须是正整数")
-    require(info.get("CFBundleExecutable") == "launcher", "CFBundleExecutable 不是 launcher")
-    return f"VERSION={version}, app={short} ({build})"
+    return f"VERSION={version}"
 
 
 def check_python_syntax() -> str:
-    paths = [ROOT / "server.py"]
+    paths = [ROOT / "server.py", ROOT / "winops.py"]
     paths.extend(sorted((ROOT / "tools").glob("*.py")))
     paths.extend(sorted((ROOT / "tests").glob("test_*.py")))
     for path in paths:
@@ -391,17 +376,13 @@ def check_javascript_bindings() -> str:
     return f"{checked} 个模块，{len(shared)} 个公共可调用导出"
 
 
-def check_shell_and_plist() -> str:
-    shell_files = (
-        ROOT / "start.command",
-        ROOT / "总控台.app" / "Contents" / "MacOS" / "launcher",
-    )
-    for path in shell_files:
-        command_output(["/bin/bash", "-n", str(path)])
-        require(os.access(path, os.X_OK), f"{path.relative_to(ROOT)} 没有可执行权限")
-    plutil = shutil.which("plutil") or "/usr/bin/plutil"
-    command_output([plutil, "-lint", str(INFO_PLIST)])
-    return "2 个启动脚本 + Info.plist"
+def check_windows_launchers() -> str:
+    for name in ("start.bat", "start.vbs"):
+        path = ROOT / name
+        require(path.is_file(), f"缺少启动脚本: {name}")
+        text = path.read_text(encoding="ascii")
+        require(bool(text.strip()), f"{name} 为空")
+    return "start.bat + start.vbs"
 
 
 def check_dev_requirements() -> str:
@@ -554,10 +535,11 @@ def check_javascript_tests() -> str:
     files = sorted(str(path) for path in (ROOT / "tests" / "js").glob("*.test.mjs"))
     require(bool(files), "tests/js/ 下没有 .test.mjs 测试文件")
     output = command_output([node, "--test", *files])
-    match = re.search(r"# (pass)\s+(\d+)", output)
+    match = re.search(r"(?:#|ℹ)\s+pass\s+(\d+)", output)
     require(match is not None, "无法确认 node --test 结果")
-    passed = int(match.group(2))
-    require("# fail" not in output or re.search(r"# fail\s+0$", output, re.M),
+    passed = int(match.group(1))
+    fail_match = re.search(r"(?:#|ℹ)\s+fail\s+(\d+)", output)
+    require(fail_match is None or int(fail_match.group(1)) == 0,
             "JavaScript 测试存在失败项")
     return f"{passed} 个测试"
 
@@ -611,7 +593,7 @@ def main() -> int:
         ("Python 语法", check_python_syntax),
         ("JavaScript 语法", check_javascript_syntax),
         ("JavaScript 模块绑定", check_javascript_bindings),
-        ("启动脚本与 plist", check_shell_and_plist),
+        ("Windows 启动脚本", check_windows_launchers),
         ("开发依赖锁定", check_dev_requirements),
         ("素材来源台账", check_asset_provenance),
         ("主题注册表", check_themes),

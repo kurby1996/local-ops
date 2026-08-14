@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -56,6 +57,7 @@ class ReleaseFixtureTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "敏感文件"):
                 release.iter_release_files()
 
+    @unittest.skipIf(sys.platform == "win32", "Windows 创建符号链接通常需要额外权限")
     def test_symlinked_required_source_is_rejected(self):
         target = self.write("target/server.py")
         (self.root / "server.py").symlink_to(target)
@@ -95,7 +97,7 @@ class ReleaseFixtureTests(unittest.TestCase):
 
     def test_archive_is_reproducible_and_metadata_is_normalized(self):
         regular = self.write("server.py", b"print('ok')\n")
-        executable = self.write("start.command", b"#!/bin/bash\nexit 0\n")
+        executable = self.write("start.bat", b"@echo off\nexit /b 0\n")
         regular.chmod(0o600)
         executable.chmod(0o700)
         first = self.root / "dist" / "first.zip"
@@ -111,11 +113,12 @@ class ReleaseFixtureTests(unittest.TestCase):
             release.verify_archive(second, entries, "1.2.3")
 
         self.assertEqual(first.read_bytes(), second.read_bytes())
-        self.assertEqual(stat.S_IMODE(second.stat().st_mode), 0o644)
+        if sys.platform != "win32":
+            self.assertEqual(stat.S_IMODE(second.stat().st_mode), 0o644)
         with zipfile.ZipFile(second) as archive:
             infos = {info.filename: info for info in archive.infolist()}
         regular_info = infos["总控台-1.2.3/server.py"]
-        executable_info = infos["总控台-1.2.3/start.command"]
+        executable_info = infos["总控台-1.2.3/start.bat"]
         self.assertEqual(regular_info.compress_type, zipfile.ZIP_STORED)
         self.assertEqual(regular_info.date_time, (2024, 1, 1, 0, 0, 0))
         self.assertEqual(
@@ -124,7 +127,7 @@ class ReleaseFixtureTests(unittest.TestCase):
         )
         self.assertEqual(
             (executable_info.external_attr >> 16) & 0xFFFF,
-            stat.S_IFREG | 0o755,
+            stat.S_IFREG | 0o644,
         )
 
     def test_archive_and_checksum_verification_detect_tampering(self):

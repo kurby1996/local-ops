@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 仓库改为 Windows 专用：删除 `总控台.app`、`start.command` 与 macOS 公证/安装说明，启动入口为 `start.bat` / `start.vbs`。
+
 ### Added
 
 - 顶栏新增 GitHub 仓库图标按钮，点击在新标签页打开项目源码仓库。
