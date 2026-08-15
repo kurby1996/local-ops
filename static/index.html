@@ -591,12 +591,19 @@
       </div>
       <button class="switch" id="setNotify" type="button" role="switch" aria-checked="false" aria-label="任务完成通知"><i></i></button>
     </div>
-    <div class="set-row">
+    <div class="set-block">
       <div class="set-copy">
         <div class="set-name">外观</div>
-        <div class="set-hint">浅色、深色或跟随系统</div>
+        <div class="set-hint">指挥台是黑白。暮紫、松绿、琥珀是另外三套带颜色的外观</div>
       </div>
-      <div class="mini-tabs" id="setAppearance" role="group" aria-label="外观">
+      <div class="theme-picker" id="themePicker" role="listbox" aria-label="外观"></div>
+    </div>
+    <div class="set-row">
+      <div class="set-copy">
+        <div class="set-name">明暗</div>
+        <div class="set-hint">同一套外观里再选浅色或深色</div>
+      </div>
+      <div class="mini-tabs" id="setAppearance" role="group" aria-label="明暗">
         <button class="mini-tab" type="button" data-appearance="auto">自动</button>
         <button class="mini-tab" type="button" data-appearance="light">浅色</button>
         <button class="mini-tab" type="button" data-appearance="dark">深色</button>

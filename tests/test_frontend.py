@@ -161,32 +161,40 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
         )
 
     def test_small_text_color_pairs_meet_wcag_aa(self):
-        ops = (ROOT / "static/themes/ops.css").read_text(encoding="utf-8")
-        ops_light = theme_token_block(ops, "light")
-        ops_dark = theme_token_block(ops, "dark")
+        theme_dir = ROOT / "static/themes"
+        theme_files = sorted(theme_dir.glob("*.css"))
+        self.assertTrue(theme_files)
 
-        pairs = [
-            (css_variable(ops_light, "ink-4"),
-             css_variable(ops_light, "room")),
-            (css_variable(ops_dark, "ink-4"),
-             css_variable(ops_dark, "card")),
-            (css_variable(ops_light, "accent"),
-             css_variable(ops_light, "card")),
-            (css_variable(ops_dark, "accent"),
-             css_variable(ops_dark, "card")),
-            (css_variable(ops_light, "green"),
-             css_variable(ops_light, "card")),
-            (css_variable(ops_light, "red"),
-             css_variable(ops_light, "card")),
-            (css_variable(ops_dark, "red"),
-             css_variable(ops_dark, "card")),
-        ]
-        for foreground, background in pairs:
-            with self.subTest(foreground=foreground, background=background):
-                self.assertGreaterEqual(
-                    contrast_ratio(foreground, background),
-                    4.5,
-                )
+        for css_path in theme_files:
+            source = css_path.read_text(encoding="utf-8")
+            light = theme_token_block(source, "light")
+            dark = theme_token_block(source, "dark")
+            pairs = [
+                (css_variable(light, "ink-4"),
+                 css_variable(light, "room")),
+                (css_variable(dark, "ink-4"),
+                 css_variable(dark, "card")),
+                (css_variable(light, "accent"),
+                 css_variable(light, "card")),
+                (css_variable(dark, "accent"),
+                 css_variable(dark, "card")),
+                (css_variable(light, "green"),
+                 css_variable(light, "card")),
+                (css_variable(light, "red"),
+                 css_variable(light, "card")),
+                (css_variable(dark, "red"),
+                 css_variable(dark, "card")),
+            ]
+            for foreground, background in pairs:
+                with self.subTest(
+                    theme=css_path.stem,
+                    foreground=foreground,
+                    background=background,
+                ):
+                    self.assertGreaterEqual(
+                        contrast_ratio(foreground, background),
+                        4.5,
+                    )
 
     def test_linked_service_action_edits_instead_of_duplicating(self):
         source = (ROOT / "static/js/services.js").read_text(encoding="utf-8")
@@ -287,6 +295,7 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
     def test_optional_appearance_section_and_unified_brand_assets_exist(self):
         html = (ROOT / "static/index.html").read_text(encoding="utf-8")
         overlays = (ROOT / "static/js/overlays.js").read_text(encoding="utf-8")
+        widgets = (ROOT / "static/js/widgets.js").read_text(encoding="utf-8")
         css = (ROOT / "static/base.css").read_text(encoding="utf-8")
         self.assertIn('id="appearanceDetails"', html)
         self.assertIn('class="appearance-disclosure-closed">展开设置</span>', html)
@@ -295,6 +304,12 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
         self.assertIn("icon('chevron-down', 16)", overlays)
         self.assertIn(".appearance-details[open] .appearance-chevron", css)
         self.assertIn("transform: rotate(180deg)", css)
+        self.assertIn('id="themePicker"', html)
+        self.assertIn('aria-label="外观"', html)
+        self.assertIn('暮紫、松绿、琥珀', html)
+        self.assertIn(".theme-picker", css)
+        self.assertIn(".theme-swatch-preview", css)
+        self.assertIn("applyUiTheme(btn.dataset.themeId, true)", widgets)
         self.assertIn('/assets/brand-mark.png', html)
         self.assertIn('/assets/favicon-32.png', html)
         for name in (

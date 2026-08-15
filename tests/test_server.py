@@ -1142,6 +1142,61 @@ class ConsoleRestartTests(unittest.TestCase):
         self.assertIn("--restart-helper", command)
         self.assertEqual(command[-1], "9603")
 
+    def test_stop_targets_include_lock_and_port_when_cwd_missing(self):
+        server_py = os.path.join(server.BASE_DIR, "server.py")
+        snap = {
+            73001: {"uid": server.SELF_UID,
+                    "args": "pythonw.exe " + server_py, "etime": 10},
+            73002: {"uid": server.SELF_UID,
+                    "args": "pythonw.exe " + server_py, "etime": 20},
+            73003: {"uid": server.SELF_UID,
+                    "args": "python.exe other\\server.py", "etime": 30},
+        }
+        with mock.patch.object(server, "find_console_instances", return_value=[]), \
+                mock.patch.object(server, "read_instance_lock_pid",
+                                  return_value=73001), \
+                mock.patch.object(server, "pid_alive", return_value=True), \
+                mock.patch.object(server, "process_uid",
+                                  return_value=server.SELF_UID), \
+                mock.patch.object(server, "ps_snapshot", return_value=snap), \
+                mock.patch.object(server, "lsof_cwds", return_value={}), \
+                mock.patch.object(server, "scan_listeners", return_value={
+                    (73002, 9600), (73003, 9601)}):
+            found = {item["pid"]: item for item in server.collect_stop_targets()}
+        self.assertIn(73001, found)
+        self.assertEqual(found[73001]["source"], "lock")
+        self.assertIn(73002, found)
+        self.assertEqual(found[73002]["source"], "port")
+        self.assertNotIn(73003, found)
+
+    def test_stop_console_instances_force_kills_found_pids(self):
+        alive = {74001}
+        kills = []
+
+        def fake_alive(pid):
+            return pid in alive
+
+        def fake_kill(pid):
+            kills.append(pid)
+            alive.discard(pid)
+            return True, None
+
+        with mock.patch.object(server, "collect_stop_targets", return_value=[
+                    {"pid": 74001, "ports": [9600]},
+                ]), \
+                mock.patch.object(server, "pid_alive", side_effect=fake_alive), \
+                mock.patch.object(server, "_terminate_console_pid",
+                                  side_effect=fake_kill):
+            stopped, errors = server.stop_console_instances(wait_sec=0)
+        self.assertEqual(stopped, [74001])
+        self.assertEqual(errors, [])
+        self.assertEqual(kills, [74001])
+
+    def test_terminate_console_pid_refuses_current_stop_process(self):
+        ok, error = server._terminate_console_pid(server.SELF_PID)
+        self.assertFalse(ok)
+        self.assertIn("stop", error)
+
     def test_panel_stop_shuts_down_after_response_window(self):
         class FakeServer:
             def __init__(self):
@@ -1233,9 +1288,15 @@ class DiagnoseTests(unittest.TestCase):
 class ThemeTests(unittest.TestCase):
     def test_list_themes_reads_manifests(self):
         listed = server.list_themes()
-        self.assertEqual([theme["id"] for theme in listed], ["ops"])
+        self.assertEqual(
+            [theme["id"] for theme in listed],
+            ["ops", "amber", "dusk", "pine"],
+        )
         themes = {t["id"]: t for t in listed}
-        self.assertEqual(themes["ops"]["name"], "Ops 指挥台")
+        self.assertEqual(themes["ops"]["name"], "指挥台")
+        self.assertEqual(themes["dusk"]["name"], "暮紫")
+        self.assertEqual(themes["pine"]["name"], "松绿")
+        self.assertEqual(themes["amber"]["name"], "琥珀")
         self.assertTrue(themes["ops"]["colors"])
 
     def test_config_defaults_ui_theme(self):

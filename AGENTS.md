@@ -7,17 +7,17 @@
 - `server.py` — 后端（仅标准库，Python 3.12）；`winops.py` 负责 Windows 进程/端口/文件选择/实例锁
 - `static/index.html` / `static/app.js`（入口）/ `static/js/{core,launchpad,services,overlays,ports,widgets}.js`（原生 ES Modules，无构建）/ `static/icons.js` — 前端（原生，禁框架/CDN/构建）；`core.js` 承载工具/API/浮层/状态/主题注册，`launchpad.js` 卡片+拖拽+诊断+启动台 KPI/分区过滤，`services.js` 表格+监控 KPI 火花线，`overlays.js` 模态+抽屉，`ports.js` 端口归一化纯函数，`widgets.js` 右侧信息栏（实时动态/告警、TOP5、小贴士、快捷操作）与导航轨状态；模块间用 `window.__poll` 共享轮询入口
 - 布局 v2：左侧 `.rail` 图标导航轨（启动台/服务监控视图切换 + 日志中心/设置中心弹层入口）+ 顶栏 + 内容/右侧信息栏双栏网格（≤1280px 侧栏下沉到底部、≤900px 导航轨隐藏）；结构样式集中在 `static/base.css` 末尾「布局 v2」段（主题令牌驱动），主题包负责视觉皮肤
-- `static/themes/` — **单一主题**：当前仅内置 `ops`（指挥台，`DEFAULT_UI_THEME` 常量指定并在清单中固定排首位）。`{id}.css` 整包样式 + `{id}.json` 清单（`id/name/author/desc/colors[]`）的注册机制保留：`GET /api/state` 返回 `themes` 与 `uiTheme`；`POST /api/ui/theme {theme}` 校验 id 后落盘。产品不提供主题选择界面（已随多主题一并移除），深浅色切换仍保留。
+- `static/themes/` — 四套外观：`ops`（指挥台，黑白默认，`DEFAULT_UI_THEME` 并在清单中固定排首位）、`dusk`（暮紫）、`pine`（松绿）、`amber`（琥珀）。`ops.css` 为整包样式；其余主题 `@import` 后只覆盖令牌。`{id}.json` 清单含 `id/name/author/desc/colors[]`。`GET /api/state` 返回 `themes` 与 `uiTheme`；`POST /api/ui/theme {theme}` 校验 id 后落盘。设置中心「外观」选配色，「明暗」独立切换浅/深。
 - `static/fonts/GeistMono-Variable.woff2` — vendored 数据/代码字体；中文与正文使用 Segoe UI / 微软雅黑；`static/icons/*.svg` — Lucide 图标源文件（vendored）；`tools/gen_icons.py` — 由 svg 重新生成 `icons.js`（勿手改 icons.js）
 - `static/assets/` — 品牌素材：`console-app-icon.png` 为主图，`brand-mark.png` 为顶栏标识；`favicon-32.png` / `favicon.ico` / `apple-touch-icon.png` 由 `tools/gen_brand_assets.py` 生成
 - `%APPDATA%\总控台\config.json` — 用户配置；`icons/` 为应用图标
 - `%LOCALAPPDATA%\总控台\Logs\` — 应用与总控台运行日志
 - `data/` — 旧版项目内数据，仅在新目标不存在的首次启动中复制迁移；保留不删除
-- `start.bat` / `start.vbs` — Windows 启动入口
+- `start.bat` / `start.vbs` — Windows 启动入口；`stop.bat` 只结束本项目总控台（卡住时可强制结束），不停止启动台里已运行的应用
 
 ## 运行
 
-`python server.py` 或 `py -3 server.py` → 绑定 `127.0.0.1`，端口从 **9600** 起尝试，被占则 +1（最多 10 个）。启动后自动打开浏览器。`/favicon.ico` 返回统一品牌图标。双击 `start.bat` / `start.vbs` 会先识别同项目现有总控台，可直接打开或安全重启。
+`python server.py` 或 `py -3 server.py` → 绑定 `127.0.0.1`，端口从 **9600** 起尝试，被占则 +1（最多 10 个）。启动后自动打开浏览器。`/favicon.ico` 返回统一品牌图标。双击 `start.bat` / `start.vbs` 会先识别同项目现有总控台，可直接打开或安全重启。网页打不开或进程卡住时双击 `stop.bat`（或 `python server.py --stop`）结束本项目总控台，不会关掉启动台里已经运行的应用。
 
 ## API 契约（全部 JSON；icon 上传为原始字节）
 
@@ -139,6 +139,6 @@
 - 服务监控只在当前页面会话连续轮询期间提醒新出现的、未管理的 mine 端口；首次加载、断线/后台/降级/重启恢复时静默建立基线。发现栏提供「加入启动台」「忽略并隐藏」「暂时关闭」
 - 从服务监控或新端口发现点击「加入启动台」时，项目识别完成前不得保存；创建请求必须携带 `attachPid`，由后端原子完成卡片创建与来源 PID 认领，失败时不留下“已创建但未认领”的半成品卡片；成功后卡片直接显示运行中
 - DOM 按 key 原地更新，禁整列表重绘闪烁；fetch 失败显示断连横幅
-- 深浅色跟随系统 + 手动切换（localStorage `console-theme`）；**单一 UI 主题 Ops 指挥台**（ops.css：深空蓝黑/雾灰双色 + 柔和圆角细边 + 蓝色强调，配合布局 v2 的导航轨/KPI 图标卡/实时动态侧栏；`#themeCss` 整包加载机制保留）；字体 = Segoe UI / 微软雅黑 + Geist Mono（数据/代码）；顶栏品牌图标 = `static/assets/brand-mark.png`；UI 零 emoji
+- 深浅色跟随系统 + 手动切换（localStorage `console-theme`）；外观由设置中心选择并经 `#themeCss` 整包加载（默认指挥台黑白；另有暮紫、松绿、琥珀三套带色外观）；字体 = Segoe UI / 微软雅黑 + Geist Mono（数据/代码）；顶栏品牌图标 = `static/assets/brand-mark.png`；UI 零 emoji
 - 动效：卡片入场 stagger（`--d`）、hover 浮起、模态/抽屉缓动、按键下压回弹、`prefers-reduced-motion` 降级
 - 危险操作（结束进程/删除应用）必须确认

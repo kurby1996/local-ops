@@ -47,6 +47,7 @@ INCLUDE = (
     "winops.py",
     "start.bat",
     "start.vbs",
+    "stop.bat",
     "static",
     "docs",
     "tests",

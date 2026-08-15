@@ -112,6 +112,7 @@ def check_required_files() -> str:
         "winops.py",
         "start.bat",
         "start.vbs",
+        "stop.bat",
         "tests/test_server.py",
         "docs/screenshots/ops-launchpad.jpg",
         "docs/screenshots/ops-services.jpg",
@@ -377,12 +378,14 @@ def check_javascript_bindings() -> str:
 
 
 def check_windows_launchers() -> str:
-    for name in ("start.bat", "start.vbs"):
+    for name in ("start.bat", "start.vbs", "stop.bat"):
         path = ROOT / name
         require(path.is_file(), f"缺少启动脚本: {name}")
         text = path.read_text(encoding="ascii")
         require(bool(text.strip()), f"{name} 为空")
-    return "start.bat + start.vbs"
+    require("server.py --stop" in (ROOT / "stop.bat").read_text(encoding="ascii"),
+            "stop.bat 必须调用 server.py --stop")
+    return "start.bat + start.vbs + stop.bat"
 
 
 def check_dev_requirements() -> str:

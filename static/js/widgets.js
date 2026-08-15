@@ -7,6 +7,7 @@
    ============================================================ */
 import { $, el, setText, setChildren, icon, state, fmtClock, taskExitStatus,
   openLayer, closeLayer, act, post, toast, escapeHtml, applyTheme,
+  applyUiTheme, currentUiTheme, registeredThemes,
   taskNotificationsEnabled, toggleTaskNotifications, MOD_KEY, shortHome } from './core.js';
 import { openAppModal, openLogs, openConsoleLog, openConfirm } from './overlays.js';
 import { configuredPort } from './ports.js';
@@ -82,6 +83,16 @@ export function initWidgets() {
     else localStorage.setItem('console-theme', mode);
     applyTheme();
     syncSettings();
+  });
+  $('#themePicker').addEventListener('click', e => {
+    const btn = e.target.closest('.theme-swatch');
+    if (!btn || !btn.dataset.themeId) return;
+    if (btn.dataset.themeId === currentUiTheme()) return;
+    const name = btn.dataset.themeName || btn.dataset.themeId;
+    applyUiTheme(btn.dataset.themeId, true).then(ok => {
+      if (ok) toast('已切换配色：' + name);
+      syncSettings();
+    });
   });
 
   $('#feedClearL').addEventListener('click', clearFeed);
@@ -332,6 +343,17 @@ export function renderWidgets(data) {
   renderTopRes(data);
   renderTips(data);
   setText(railVer, data.version ? 'v' + data.version : 'v—');
+  if (settingsMask.classList.contains('open')) {
+    if (!$('#themePicker').children.length) renderThemePicker();
+    else {
+      const current = currentUiTheme();
+      for (const btn of $('#themePicker').querySelectorAll('.theme-swatch')) {
+        const on = btn.dataset.themeId === current;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-selected', String(on));
+      }
+    }
+  }
 }
 
 /* ============================================================
@@ -410,6 +432,36 @@ export function closeLogsCenter() { closeLayer(logsMask); }
    ============================================================ */
 const settingsMask = $('#settingsMask');
 
+function renderThemePicker() {
+  const host = $('#themePicker');
+  if (!host) return;
+  const themes = registeredThemes();
+  const current = currentUiTheme();
+  host.replaceChildren();
+  for (const theme of themes) {
+    const btn = el('button', 'theme-swatch' + (theme.id === current ? ' active' : ''));
+    btn.type = 'button';
+    btn.dataset.themeId = theme.id;
+    btn.dataset.themeName = theme.name || theme.id;
+    btn.setAttribute('role', 'option');
+    btn.setAttribute('aria-selected', String(theme.id === current));
+    const preview = el('span', 'theme-swatch-preview');
+    preview.setAttribute('aria-hidden', 'true');
+    const colors = Array.isArray(theme.colors) ? theme.colors : [];
+    preview.style.background = colors[0] || 'var(--room)';
+    const plate = document.createElement('b');
+    plate.style.background = colors[1] || 'var(--card)';
+    plate.style.borderLeftColor = colors[2] || 'var(--accent)';
+    preview.appendChild(plate);
+    const name = el('span', 'theme-swatch-name');
+    name.textContent = theme.name || theme.id;
+    const desc = el('span', 'theme-swatch-desc');
+    desc.textContent = theme.desc || '';
+    btn.append(preview, name, desc);
+    host.appendChild(btn);
+  }
+}
+
 function syncSettings() {
   const on = taskNotificationsEnabled();
   const sw = $('#setNotify');
@@ -420,6 +472,7 @@ function syncSettings() {
   for (const tab of $('#setAppearance').querySelectorAll('.mini-tab')) {
     tab.classList.toggle('active', tab.dataset.appearance === mode);
   }
+  renderThemePicker();
   const d = state.data || {};
   setText($('#setVersion'), d.version ? 'v' + d.version : '—');
   setText($('#setPort'), d.consolePort ? ':' + d.consolePort : '—');

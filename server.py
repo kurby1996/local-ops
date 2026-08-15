@@ -3865,6 +3865,160 @@ def open_browser_later(port, delay=0.8):
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _console_command_line(info):
+    return str((info or {}).get("args") or "")
+
+
+def _is_stop_or_helper_command(args):
+    return "--restart-helper" in args or "--stop" in args
+
+
+def _command_points_at_this_server(args):
+    """命令行是否明确指向本项目的 server.py。cwd 读不到时的兜底。"""
+    if not args or "server.py" not in args:
+        return False
+    marker = os.path.realpath(os.path.join(BASE_DIR, "server.py")).lower()
+    normalized = args.replace("/", "\\").lower()
+    return marker in normalized
+
+
+def read_instance_lock_pid(path=INSTANCE_LOCK_PATH):
+    """读取数据目录锁文件里的 PID；锁被占用时仍可读取。"""
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            text = handle.read(32).strip()
+        if not text:
+            return None
+        pid = int(text.split()[0])
+        return pid if pid > 0 else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def collect_stop_targets():
+    """收集本项目应被 stop.bat 结束的总控台 PID，不含启动台应用。"""
+    targets = {}
+    for item in find_console_instances():
+        targets[item["pid"]] = dict(item, source="cwd")
+
+    lock_pid = read_instance_lock_pid()
+    if (lock_pid and lock_pid != SELF_PID and pid_alive(lock_pid)
+            and process_uid(lock_pid) == SELF_UID):
+        snap = ps_snapshot([lock_pid], with_uid=True)
+        info = snap.get(lock_pid) or {}
+        args = _console_command_line(info)
+        if "server.py" in args and not _is_stop_or_helper_command(args):
+            targets.setdefault(lock_pid, {
+                "pid": lock_pid,
+                "ports": [],
+                "cmd": args,
+                "cwd": None,
+                "uptimeSec": info.get("etime"),
+                "source": "lock",
+            })
+
+    allowed_ports = set(range(PORT_START, PORT_START + PORT_TRIES))
+    listener_pids = {}
+    for pid, port in scan_listeners():
+        if port in allowed_ports and pid != SELF_PID:
+            listener_pids.setdefault(pid, []).append(port)
+    missing = [pid for pid in listener_pids if pid not in targets]
+    if missing:
+        snap = ps_snapshot(missing, with_uid=True)
+        cwds = lsof_cwds(missing)
+        project = os.path.realpath(BASE_DIR)
+        for pid in missing:
+            info = snap.get(pid) or {}
+            if info.get("uid") != SELF_UID:
+                continue
+            args = _console_command_line(info)
+            if "server.py" not in args or _is_stop_or_helper_command(args):
+                continue
+            cwd = cwds.get(pid)
+            same_dir = False
+            try:
+                same_dir = bool(cwd and os.path.realpath(cwd) == project)
+            except OSError:
+                same_dir = False
+            if not same_dir and not _command_points_at_this_server(args):
+                continue
+            targets[pid] = {
+                "pid": pid,
+                "ports": sorted(listener_pids.get(pid, [])),
+                "cmd": args,
+                "cwd": cwd,
+                "uptimeSec": info.get("etime"),
+                "source": "port",
+            }
+    return sorted(targets.values(), key=lambda item: item["pid"])
+
+
+def _terminate_console_pid(pid):
+    """强制结束本机当前用户的总控台进程，不影响启动台应用。"""
+    if pid == SELF_PID:
+        return False, "不能结束当前 stop 进程"
+    uid = process_uid(pid)
+    if uid is None:
+        return True, None
+    if uid != SELF_UID:
+        return False, "只能结束当前用户的进程"
+    if IS_WINDOWS:
+        return winops.kill_process(pid, True)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True, None
+    except PermissionError:
+        return False, "没有权限结束该进程"
+    except OSError as e:
+        return False, "结束失败: %s" % e
+    return True, None
+
+
+def stop_console_instances(wait_sec=3.0):
+    """结束本项目总控台。返回 (stopped_pids, errors)。"""
+    stopped = []
+    errors = []
+    for item in collect_stop_targets():
+        pid = item["pid"]
+        ok, error = _terminate_console_pid(pid)
+        deadline = time.monotonic() + max(0.0, wait_sec)
+        while time.monotonic() < deadline and pid_alive(pid):
+            time.sleep(0.05)
+        if pid_alive(pid):
+            errors.append((pid, error or "进程仍在运行"))
+        elif ok:
+            stopped.append(pid)
+        else:
+            # 结束调用报错，但进程已经不在，视为成功。
+            stopped.append(pid)
+    return stopped, errors
+
+
+def stop_main():
+    """stop.bat 入口：只关本项目总控台，不停止启动台里的独立应用。"""
+    print("正在查找本项目的总控台…", flush=True)
+    targets = collect_stop_targets()
+    if not targets:
+        print("当前没有正在运行的总控台。", flush=True)
+        print("启动台里已经运行的应用不会被这个脚本关闭。", flush=True)
+        return 0
+    for item in targets:
+        ports = " / ".join(":%d" % port for port in item.get("ports") or []) or "未监听"
+        print("找到总控台  PID %d  %s" % (item["pid"], ports), flush=True)
+    stopped, errors = stop_console_instances()
+    if stopped:
+        print("已关闭：%s" % "、".join("PID %d" % pid for pid in stopped), flush=True)
+    for pid, error in errors:
+        print("未能关闭 PID %d：%s" % (pid, error), flush=True)
+    print("启动台里已经运行的应用不会被这个脚本关闭。", flush=True)
+    if errors:
+        print("可再双击一次 stop.bat；仍失败时到任务管理器结束对应 python/pythonw。",
+              flush=True)
+        return 1
+    return 0
+
+
 def find_console_instances():
     """查找从同一项目目录启动的总控台，用于双击启动器去重。"""
     snap = ps_snapshot(None, with_uid=True)
@@ -4121,6 +4275,8 @@ if __name__ == "__main__":
         prepare_runtime_storage()
     elif "--launcher" in sys.argv:
         launcher_main()
+    elif "--stop" in sys.argv:
+        sys.exit(stop_main())
     elif "--restart-helper" in sys.argv:
         index = sys.argv.index("--restart-helper")
         try:

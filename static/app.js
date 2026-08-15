@@ -5,7 +5,7 @@
 import { $, el, setText, setChildren, icon, escapeHtml,
   post, act, toast, state, DISCONNECTED_TEXT, notifyTaskCompletions,
   applyTheme, initThemeToggle, applyUiTheme,
-  currentUiTheme, reconcilePendingUiTheme, trapLayerFocus,
+  currentUiTheme, registeredThemes, reconcilePendingUiTheme, trapLayerFocus,
   openLayer, closeLayer, activeLayer,
   currentMutationEpoch, taskNotificationsEnabled, toggleTaskNotifications,
   localServiceUrl, MOD_KEY, IS_WIN } from './js/core.js';
@@ -441,9 +441,19 @@ function paletteActions() {
   items.push({
     icon: 'settings',
     title: '打开设置中心',
-    hint: '通知 · 外观 · 版本',
+    hint: '通知 · 外观 · 配色 · 版本',
     run: openSettingsCenter,
   });
+  const currentThemeId = currentUiTheme();
+  for (const theme of registeredThemes()) {
+    items.push({
+      icon: 'sliders-horizontal',
+      title: '切换配色 · ' + (theme.name || theme.id),
+      hint: theme.desc || '主题',
+      on: theme.id === currentThemeId,
+      run: () => applyUiTheme(theme.id, true),
+    });
+  }
   const notifyOn = taskNotificationsEnabled();
   items.push({
     icon: 'clock',
