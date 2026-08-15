@@ -1045,6 +1045,9 @@ def popen_creationflags(hidden=True):
     return flags
 
 
-def detached_creationflags():
-    return (CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
-            | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW)
+def detached_creationflags(breakaway=False):
+    flags = (CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+             | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW)
+    if breakaway:
+        flags |= CREATE_BREAKAWAY_FROM_JOB
+    return flags

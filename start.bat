@@ -22,11 +22,11 @@ if not defined PYEXE (
   exit /b 127
 )
 
-echo Starting console...
+REM --detach returns immediately; the console window can then close.
 if defined PYARGS (
-  "%PYEXE%" %PYARGS% server.py
+  "%PYEXE%" %PYARGS% server.py --detach --no-browser
 ) else (
-  "%PYEXE%" server.py
+  "%PYEXE%" server.py --detach --no-browser
 )
 set "ERR=%ERRORLEVEL%"
 if not "%ERR%"=="0" (

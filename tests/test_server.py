@@ -629,6 +629,28 @@ class RuntimeStorageTests(unittest.TestCase):
             if sys.platform != "win32":
                 self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
 
+    def test_redirect_console_output_rebinds_devnull_stdio(self):
+        with tempfile.TemporaryDirectory() as td:
+            logs = os.path.join(td, "custom-logs")
+            os.makedirs(logs, exist_ok=True)
+            env = dict(os.environ, CONSOLE_LOG_DIR=logs)
+            script = (
+                "import os, sys, server; "
+                "server.ensure_stdio(); "
+                "sys.stdout = open(os.devnull, 'w', encoding='utf-8'); "
+                "sys.stderr = open(os.devnull, 'w', encoding='utf-8'); "
+                "server.redirect_console_output(); "
+                "print('from-devnull-stdio', flush=True)"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=server.BASE_DIR,
+                env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            log_path = os.path.join(logs, "console.log")
+            with open(log_path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read().replace("\r\n", "\n").strip(),
+                                 "from-devnull-stdio")
+
 
 class ProcessIdentityTests(unittest.TestCase):
     def test_random_marker_is_required_for_whole_process_group(self):
@@ -1122,6 +1144,54 @@ class ConsoleRestartTests(unittest.TestCase):
         self.assertEqual([item["pid"] for item in found], [71001, 71004])
         self.assertEqual(found[0]["ports"], [9600])
         self.assertEqual(found[1]["ports"], [9601])
+
+    def test_browser_stays_closed_unless_explicit_flag(self):
+        self.assertFalse(server.wants_browser_open(["server.py"]))
+        self.assertFalse(server.wants_browser_open(["server.py", "--no-browser"]))
+        self.assertTrue(server.wants_browser_open(["server.py", "--browser"]))
+
+    def test_detach_argv_drops_flag_and_prefers_windowless_python(self):
+        with mock.patch.object(server, "windowless_python_executable",
+                               return_value=r"D:\Python\pythonw.exe"):
+            child = server.detach_argv([
+                "server.py", "--detach", "--no-browser",
+            ])
+        self.assertEqual(child[0], r"D:\Python\pythonw.exe")
+        self.assertTrue(child[1].replace("/", "\\").endswith("server.py"))
+        self.assertNotIn("--detach", child)
+        self.assertIn("--no-browser", child)
+
+    def test_detach_argv_adds_no_browser_by_default(self):
+        with mock.patch.object(server, "windowless_python_executable",
+                               return_value=r"D:\Python\pythonw.exe"):
+            child = server.detach_argv(["server.py", "--detach"])
+        self.assertIn("--no-browser", child)
+        self.assertNotIn("--browser", child)
+
+    def test_detach_main_returns_immediately_after_spawn(self):
+        fake = mock.Mock(pid=88001)
+        with mock.patch.object(server, "detach_argv",
+                               return_value=["pythonw", "server.py",
+                                             "--no-browser"]), \
+                mock.patch.object(server.subprocess, "Popen",
+                                  return_value=fake) as popen:
+            self.assertEqual(server.detach_main(), 0)
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(kwargs["cwd"], server.BASE_DIR)
+        self.assertTrue(kwargs["creationflags"]
+                        & server.winops.CREATE_BREAKAWAY_FROM_JOB)
+
+    def test_ensure_stdio_survives_missing_streams(self):
+        real_out, real_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout = None
+            sys.stderr = None
+            server.ensure_stdio()
+            print("stdio-ok", flush=True)
+            self.assertIsNotNone(sys.stdout)
+            self.assertIsNotNone(sys.stderr)
+        finally:
+            sys.stdout, sys.stderr = real_out, real_err
 
     def test_panel_restart_spawns_helper_before_shutdown(self):
         class FakeServer:

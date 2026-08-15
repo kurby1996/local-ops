@@ -11,6 +11,9 @@
 ### Changed
 
 - 仓库改为 Windows 专用：删除 `总控台.app`、`start.command` 与 macOS 公证/安装说明，启动入口为 `start.bat` / `start.vbs`。
+- `start.bat` / `start.vbs` 与默认命令行不再自动打开浏览器；需要时使用 `--browser`。
+- `start.bat` 通过 `server.py --detach` 启动后立即退出命令行，总控台以 `pythonw`/`pyw` 在后台继续运行。
+- 修复 `start.vbs` / `pythonw` 因没有控制台、`print` 崩溃而无法启动的问题。
 - Ops 指挥台深色模式提高卡片与底色、正文与次级文字的对比，避免黑底上内容糊成一团。
 
 ### Added

@@ -385,6 +385,12 @@ def check_windows_launchers() -> str:
         require(bool(text.strip()), f"{name} 为空")
     require("server.py --stop" in (ROOT / "stop.bat").read_text(encoding="ascii"),
             "stop.bat 必须调用 server.py --stop")
+    start_bat = (ROOT / "start.bat").read_text(encoding="ascii")
+    require("--no-browser" in start_bat, "start.bat 不得自动打开浏览器")
+    require("--detach" in start_bat,
+            "start.bat 必须分离启动，以便命令行退出后服务仍在")
+    require("--no-browser" in (ROOT / "start.vbs").read_text(encoding="ascii"),
+            "start.vbs 不得自动打开浏览器")
     return "start.bat + start.vbs + stop.bat"
 
 

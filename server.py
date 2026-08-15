@@ -3855,6 +3855,74 @@ class Handler(BaseHTTPRequestHandler):
 
 # ---------------------------------------------------------------- 启动
 
+def is_windowless_python(executable=None):
+    """pythonw/pyw 没有控制台；stdout 常为 None，print 会直接退出。"""
+    name = os.path.basename((executable or sys.executable) or "").lower()
+    return name in {"pythonw.exe", "pyw.exe"}
+
+
+def windowless_python_executable():
+    """Prefer pythonw/pyw so a detached child does not keep a console."""
+    exe = os.path.abspath(sys.executable or "")
+    name = os.path.basename(exe).lower()
+    mapping = {"python.exe": "pythonw.exe", "py.exe": "pyw.exe"}
+    replacement = mapping.get(name)
+    if replacement:
+        candidate = os.path.join(os.path.dirname(exe), replacement)
+        if os.path.isfile(candidate):
+            return candidate
+    return exe or sys.executable
+
+
+def detach_argv(argv=None):
+    """Drop --detach and keep the rest for the background child."""
+    args = list(sys.argv if argv is None else argv)
+    script = os.path.abspath(__file__)
+    child = [windowless_python_executable(), script]
+    for arg in args[1:]:
+        if arg == "--detach":
+            continue
+        child.append(arg)
+    if "--browser" not in child and "--no-browser" not in child:
+        child.append("--no-browser")
+    return child
+
+
+def detach_main():
+    """Spawn a detached child and return so start.bat can close its console."""
+    command = detach_argv()
+    flags = winops.detached_creationflags(breakaway=True)
+    kwargs = {"cwd": BASE_DIR, "close_fds": False, "creationflags": flags}
+    try:
+        subprocess.Popen(command, **kwargs)
+    except OSError:
+        kwargs["creationflags"] = winops.detached_creationflags(breakaway=False)
+        subprocess.Popen(command, **kwargs)
+    return 0
+
+
+def ensure_stdio():
+    """保证 print/flush 在 pythonw 下也不会把进程打崩。"""
+    for attr in ("stdout", "stderr"):
+        stream = getattr(sys, attr, None)
+        broken = stream is None
+        if not broken:
+            try:
+                stream.write("")
+                stream.flush()
+            except Exception:
+                broken = True
+        if broken:
+            setattr(sys, attr, open(os.devnull, "w", encoding="utf-8",
+                                    errors="replace"))
+
+
+def wants_browser_open(argv=None):
+    """仅 --browser 才打开页面；默认和 --no-browser 都不打开。"""
+    args = sys.argv if argv is None else argv
+    return "--browser" in args
+
+
 def open_browser_later(port, delay=0.8):
     def _open():
         try:
@@ -4067,7 +4135,7 @@ def launcher_main():
     instances = find_console_instances()
     if not instances:
         try:
-            main(log_to_file=True)
+            main(open_browser=False, log_to_file=True)
         except Exception:
             _launcher_alert("总控台启动失败。请检查数据目录权限和 console.log。")
             raise
@@ -4081,9 +4149,6 @@ def launcher_main():
     choice = _launcher_dialog(
         "总控台已在运行：\n" + "\n".join(labels) + extra)
     if choice == "打开控制台":
-        ports = [p for item in instances for p in item["ports"]]
-        port = min(ports) if ports else PORT_START
-        webbrowser.open("http://%s:%d/" % (HOST, port))
         return
     if choice != "重新启动":
         return
@@ -4106,7 +4171,7 @@ def launcher_main():
                         "、".join(str(pid) for pid in survivors))
         return
     try:
-        main(preferred_port=preferred, log_to_file=True)
+        main(preferred_port=preferred, open_browser=False, log_to_file=True)
     except Exception:
         _launcher_alert("总控台重启失败。请检查数据目录权限和 console.log。")
         raise
@@ -4159,7 +4224,7 @@ def restart_helper(old_pid, preferred_port):
     return 0
 
 
-def _run_console(preferred_port=None, open_browser=True):
+def _run_console(preferred_port=None, open_browser=False):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -4198,7 +4263,7 @@ def _run_console(preferred_port=None, open_browser=True):
 
 
 def redirect_console_output():
-    """在运行目录迁移完成后，将 .app 输出安全追加到 Library Logs。"""
+    """在运行目录迁移完成后，将输出安全追加到 Logs/console.log。"""
     path = os.path.join(LOGS_DIR, "console.log")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
@@ -4213,17 +4278,19 @@ def redirect_console_output():
         os.dup2(fd, 2)
     finally:
         os.close(fd)
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(line_buffering=True)
-        except (AttributeError, OSError):
-            pass
+    # pythonw 的 ensure_stdio() 会把 stdout 换成独立的 devnull 对象；
+    # 只 dup2 不会改那个对象，print 仍进黑洞。必须重新绑到 fd 1。
+    log_stream = open(1, "w", encoding="utf-8", errors="replace",
+                      closefd=False, buffering=1)
+    sys.stdout = log_stream
+    sys.stderr = log_stream
 
 
-def main(preferred_port=None, open_browser=True, log_to_file=False):
+def main(preferred_port=None, open_browser=False, log_to_file=False):
     """Run exactly one console for this project/data directory."""
+    ensure_stdio()
     migration = prepare_runtime_storage()
-    if log_to_file:
+    if log_to_file or is_windowless_python():
         redirect_console_output()
     if migration["dataMigrated"]:
         print("已将项目内旧配置和图标复制到: %s" % DATA_DIR,
@@ -4234,11 +4301,6 @@ def main(preferred_port=None, open_browser=True, log_to_file=False):
     instance_lock = acquire_instance_lock()
     if instance_lock is None:
         print("总控台已在运行（同一数据目录只允许一个实例）。", flush=True)
-        if open_browser:
-            instances = find_console_instances()
-            ports = [port for item in instances for port in item.get("ports", [])]
-            if ports:
-                webbrowser.open("http://%s:%d/" % (HOST, min(ports)))
         return False
     try:
         _run_console(preferred_port, open_browser)
@@ -4266,6 +4328,7 @@ def supervise_main(marker):
 
 
 if __name__ == "__main__":
+    ensure_stdio()
     if "--supervise" in sys.argv:
         index = sys.argv.index("--supervise")
         marker = sys.argv[index + 1] if index + 1 < len(sys.argv) else ""
@@ -4275,6 +4338,8 @@ if __name__ == "__main__":
         prepare_runtime_storage()
     elif "--launcher" in sys.argv:
         launcher_main()
+    elif "--detach" in sys.argv:
+        sys.exit(detach_main())
     elif "--stop" in sys.argv:
         sys.exit(stop_main())
     elif "--restart-helper" in sys.argv:
@@ -4293,4 +4358,4 @@ if __name__ == "__main__":
                 preferred = int(sys.argv[index + 1])
             except (ValueError, IndexError):
                 sys.exit(2)
-        main(preferred_port=preferred, open_browser="--no-browser" not in sys.argv)
+        main(preferred_port=preferred, open_browser=wants_browser_open())

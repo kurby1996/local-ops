@@ -47,27 +47,29 @@
 
 1. **下载并解压**到一个你有读写权限的位置。
 2. **确认 Python 3.12**：在 PowerShell 或 cmd 运行 `py -3 --version` 或 `python --version`。显示 3.12 或更高即可。未安装时到 <https://www.python.org/downloads/> 下载官方安装包，并勾选 **Add python.exe to PATH**。
-3. 双击 `start.bat` 在终端里启动；若 SmartScreen 提示，选择「仍要运行」。需要无窗口后台时用 `start.vbs`。
+3. 双击 `start.bat` 启动：命令行会马上退出，总控台在后台继续跑。若 SmartScreen 提示，选择「仍要运行」。连短暂黑窗也不想看到时用 `start.vbs`。
 
 ## 运行
 
 | 方式 | 操作 | 适用场景 |
 | --- | --- | --- |
-| 双击脚本 | `start.bat` | 日常使用，能看到启动日志 |
-| 无窗口 | `start.vbs` | 后台运行，不弹出黑窗口 |
+| 双击脚本 | `start.bat` | 日常使用：启动后命令行自动退出，服务后台继续 |
+| 无窗口 | `start.vbs` | 完全后台，连短暂黑窗也不弹 |
 | 卡住关闭 | `stop.bat` | 只结束本项目总控台，不关启动台里已运行的应用 |
 | 命令行 | `py -3 server.py` 或 `python server.py` | 调试、脚本化启动 |
 
-命令行还有两个可选参数：
+命令行可选参数：
 
 ```bat
 python server.py --no-browser
 python server.py --preferred-port 9603
+python server.py --browser
+python server.py --detach
 ```
 
-启动后程序只绑定 `127.0.0.1`，从 9600 起尝试端口，被占用则递增（最多 10 个），并自动打开浏览器。命令行参数、环境变量（`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR`）见下文“数据、隐私与备份”。
+启动后程序只绑定 `127.0.0.1`，从 9600 起尝试端口，被占用则递增（最多 10 个）。`start.bat` / `start.vbs` 和默认命令行都**不会**自动打开浏览器。命令行参数、环境变量（`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR`）见下文“数据、隐私与备份”。
 
-**实际地址在哪里看**：顶栏「重启 :9600」按钮上直接显示当前端口；或看终端输出 / `%LOCALAPPDATA%\总控台\Logs\console.log`。浏览器手动访问 `http://127.0.0.1:端口号/` 即可。
+**实际地址在哪里看**：启动后自己在浏览器打开 `http://127.0.0.1:9600/`（被占则看 `%LOCALAPPDATA%\总控台\Logs\console.log` 里的端口）。顶栏「重启 :9600」也会显示当前端口。`start.bat` / `start.vbs` 都没有常驻黑窗口，失败时去看这份日志。前台调试请直接运行 `python server.py`。
 
 **停止与重启**：顶栏「重启 / 停止」控制的是总控台自身（网页服务）。停止总控台**不会**停止启动台里已经运行的应用——它们是独立进程组，会继续运行；下次打开总控台时会自动重新识别。重启总控台会加载磁盘上的最新代码，同样不影响运行中的应用。
 

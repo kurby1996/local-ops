@@ -1,6 +1,6 @@
 # 总控台 (Console)
 
-本地服务监控与快速启动控制台。**Windows 专用，零依赖**：Python 3 标准库后端 + 无构建原生前端。日常用 `start.bat`；无窗口后台用 `start.vbs`。
+本地服务监控与快速启动控制台。**Windows 专用，零依赖**：Python 3 标准库后端 + 无构建原生前端。日常用 `start.bat`（启动后命令行退出，服务后台继续）；完全无闪窗用 `start.vbs`。
 
 ## 结构
 
@@ -17,7 +17,7 @@
 
 ## 运行
 
-`python server.py` 或 `py -3 server.py` → 绑定 `127.0.0.1`，端口从 **9600** 起尝试，被占则 +1（最多 10 个）。启动后自动打开浏览器。`/favicon.ico` 返回统一品牌图标。双击 `start.bat` / `start.vbs` 会先识别同项目现有总控台，可直接打开或安全重启。网页打不开或进程卡住时双击 `stop.bat`（或 `python server.py --stop`）结束本项目总控台，不会关掉启动台里已经运行的应用。
+`python server.py` 或 `py -3 server.py` → 绑定 `127.0.0.1`，端口从 **9600** 起尝试，被占则 +1（最多 10 个）。**不自动打开浏览器**，请手动访问 `http://127.0.0.1:端口/`。需要时才加 `--browser`。`/favicon.ico` 返回统一品牌图标。`start.bat` / `start.vbs` 均带 `--no-browser`。`start.bat` 调用 `server.py --detach`：父进程立刻返回并关闭命令行，子进程以 `pythonw`/`pyw` 在后台继续；`start.vbs` 连短暂黑窗也不弹。无控制台时把日志写入 `%LOCALAPPDATA%\总控台\Logs\console.log`，避免 `print` 把进程打崩。网页打不开或进程卡住时双击 `stop.bat`（或 `python server.py --stop`）结束本项目总控台，不会关掉启动台里已经运行的应用。
 
 ## API 契约（全部 JSON；icon 上传为原始字节）
 

@@ -73,7 +73,7 @@
 - [ ] 在未安装开发工具、不存在旧 `data/` 的目标 Windows 10/11 上完成全新安装。
 - [ ] README 已明确说明需要 Python 3.12，以及 `start.bat` / `start.vbs` 与项目目录的关系。
 - [ ] 缺少或版本不符的 Python 会显示可理解、可操作的错误，不会静默退出。
-- [ ] 双击 `start.bat` 能启动并打开浏览器；SmartScreen 提示有说明。
+- [ ] 双击 `start.bat` / `start.vbs` 能启动且不自动打开浏览器；SmartScreen 提示有说明。
 
 ## 7. 许可、隐私与发行包内容
 
