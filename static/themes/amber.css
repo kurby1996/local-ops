@@ -1,6 +1,6 @@
 /* ============================================================
    总控台主题 — 琥珀
-   蜜色浅底 / 深棕暖底，整页带橙色，不是黑白
+   蜜色浅底 / 深棕暖底，整页带暖橙调，不是黑白
    复用 Ops 整包样式，只覆盖色彩令牌
    ============================================================ */
 
@@ -9,61 +9,61 @@
 :root {
   color-scheme: light;
 
-  --room: #f3dfc0;
-  --card: #fff4e4;
-  --card-2: #f8e8cc;
+  --room: #f1ebdd;
+  --card: #fffdf7;
+  --card-2: #f6f0e3;
   --paper: var(--card);
   --bg: var(--room);
 
-  --ink: #3a2410;
-  --ink-2: #6a4a28;
-  --ink-3: #7d5a34;
-  --ink-4: #7a5832;
+  --ink: #2a2013;
+  --ink-2: #574933;
+  --ink-3: #6e5f48;
+  --ink-4: #76674f;
 
-  --line: rgba(58, 36, 16, 0.14);
-  --line-2: rgba(58, 36, 16, 0.26);
+  --line: rgba(42, 32, 19, 0.12);
+  --line-2: rgba(42, 32, 19, 0.24);
 
-  --accent: #a84810;
+  --accent: #b0640c;
   --accent-ink: var(--accent);
   --on-accent: #ffffff;
-  --green: #3d6b3a;
-  --red: #b42318;
-  --amber: #9a6708;
-  --purple: #7c4d9a;
+  --green: #2f6b3a;
+  --red: #b3231a;
+  --amber: #8f5c08;
+  --purple: #7c5cff;
 
-  --shadow: 0 1px 2px rgba(58, 36, 16, 0.10);
-  --shadow-lg: 0 12px 32px rgba(58, 36, 16, 0.16);
+  --shadow: 0 1px 2px rgba(42, 32, 19, 0.10);
+  --shadow-lg: 0 12px 32px rgba(42, 32, 19, 0.17);
   --raised: var(--shadow);
   --plate-shadow: var(--shadow-lg);
-  --focus-ring: 0 0 0 2.5px rgba(168, 72, 16, 0.32);
+  --focus-ring: 0 0 0 2.5px rgba(176, 100, 12, 0.30);
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --room: #22160c;
-  --card: #3a2816;
-  --card-2: #2a1c10;
+  --room: #181207;
+  --card: #292013;
+  --card-2: #1f180d;
   --paper: var(--card);
   --bg: var(--room);
 
-  --ink: #fff0d8;
-  --ink-2: #e0c49c;
-  --ink-3: #c8a878;
-  --ink-4: #b89868;
+  --ink: #fbf3e0;
+  --ink-2: #e0d0af;
+  --ink-3: #c2b18d;
+  --ink-4: #ab9a76;
 
-  --line: rgba(240, 210, 170, 0.20);
-  --line-2: rgba(240, 210, 170, 0.36);
+  --line: rgba(224, 208, 175, 0.18);
+  --line-2: rgba(224, 208, 175, 0.32);
 
-  --accent: #f0a050;
+  --accent: #f2a93b;
   --accent-ink: var(--accent);
-  --on-accent: #1a1006;
-  --green: #86d07a;
-  --red: #f08a78;
-  --amber: #edc06a;
-  --purple: #c9a0e0;
+  --on-accent: #211304;
+  --green: #8bd47b;
+  --red: #f28c76;
+  --amber: #f2c96e;
+  --purple: #c0a6ff;
 
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.42);
   --shadow-lg: 0 14px 36px rgba(0, 0, 0, 0.56);
-  --focus-ring: 0 0 0 2.5px rgba(240, 160, 80, 0.4);
+  --focus-ring: 0 0 0 2.5px rgba(242, 169, 59, 0.38);
 }

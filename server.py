@@ -1452,7 +1452,9 @@ def build_launch_env(token, environ=None):
     """构建无 Terminal 启动时仍可找到常见开发工具的环境。
 
     无窗口启动通常只有系统 PATH，不会读取用户 shell 配置；
-    因此显式补入常见 Node、Python、Git 目录。
+    因此显式补入常见 Node、Python、Git 目录，以及各包管理器的
+    全局安装目录（npm/pnpm/yarn/pip --user/Scoop/Chocolatey/Deno 等），
+    保证“只填一条全局命令”的卡片也能启动。
     """
     env = dict(os.environ if environ is None else environ)
     home = os.path.expanduser("~")
@@ -1461,15 +1463,23 @@ def build_launch_env(token, environ=None):
         roaming = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
         pf = os.environ.get("ProgramFiles") or r"C:\Program Files"
         pf86 = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
+        program_data = os.environ.get("ProgramData") or os.path.join(
+            os.environ.get("SystemDrive") or r"C:", "\\")
+        pnpm_home = env.get("PNPM_HOME") or os.path.join(local, "pnpm")
         preferred = [
             os.path.join(home, ".local", "bin"),
             os.path.join(home, ".volta", "bin"),
             os.path.join(home, ".bun", "bin"),
             os.path.join(home, ".cargo", "bin"),
             os.path.join(home, "go", "bin"),
+            os.path.join(home, ".deno", "bin"),
+            os.path.join(home, "scoop", "shims"),
+            pnpm_home,
             os.path.join(roaming, "npm"),
             os.path.join(roaming, "fnm"),
             os.path.join(local, "fnm"),
+            os.path.join(local, "Yarn", "bin"),
+            os.path.join(program_data, "chocolatey", "bin"),
             os.path.join(local, "Programs", "Microsoft VS Code", "bin"),
             os.path.join(local, "Microsoft", "WinGet", "Links"),
             os.path.join(pf, "nodejs"),
@@ -1480,6 +1490,13 @@ def build_launch_env(token, environ=None):
         preferred.extend(sorted(
             glob.glob(os.path.join(home, ".nvm", "versions", "node", "*", "*")),
             reverse=True))
+        # pip --user 与每用户 Python 的可执行目录（全局安装的 CLI 常落在这里）。
+        preferred.extend(sorted(glob.glob(
+            os.path.join(roaming, "Python", "Python3*", "Scripts"))))
+        preferred.extend(sorted(glob.glob(
+            os.path.join(local, "Programs", "Python", "Python3*", "Scripts"))))
+        preferred.extend(sorted(glob.glob(
+            os.path.join(local, "Programs", "Python", "Python3*"))))
         preferred.extend((env.get("PATH") or "").split(os.pathsep))
         system_root = os.environ.get("SystemRoot") or r"C:\Windows"
         preferred.extend((
@@ -1487,7 +1504,7 @@ def build_launch_env(token, environ=None):
             system_root,
             os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0"),
         ))
-        env.setdefault("PNPM_HOME", os.path.join(local, "pnpm"))
+        env.setdefault("PNPM_HOME", pnpm_home)
     else:
         preferred = [
             os.path.join(home, ".local", "bin"),
@@ -1536,6 +1553,9 @@ def start_app(app):
         logf.write(header.encode("utf-8"))
         env["CONSOLE_SUPERVISE_CMD"] = app["command"]
         env["PYTHONUNBUFFERED"] = "1"
+        # 管道下 Python 默认用控制台代码页（中文 Windows 为 GBK），
+        # 与日志的 UTF-8 解码冲突；显式统一为 UTF-8。
+        env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen(
             [sys.executable, "-u", os.path.abspath(__file__),
              "--supervise", marker],
@@ -1724,6 +1744,16 @@ def _resolve_command_path(value, cwd):
     return os.path.normpath(os.path.join(cwd, value))
 
 
+def _script_from_args(args, flag_prefixes=("-",)):
+    """从参数里挑出脚本路径候选：跳过选项，且必须是脚本后缀或含路径。"""
+    candidate = next((arg for arg in args
+                      if not any(arg.startswith(p) for p in flag_prefixes)), None)
+    if candidate and (os.path.splitext(candidate)[1].lower() in SCRIPT_SUFFIXES
+                      or _has_pathsep(candidate)):
+        return candidate
+    return None
+
+
 def _script_target(tokens, cwd):
     """提取 (路径, 是否直接执行, 原路径是否相对)，否则返回空。"""
     if not tokens:
@@ -1738,15 +1768,15 @@ def _script_target(tokens, cwd):
     base = os.path.basename(executable)
     args = tokens[index + 1:]
 
-    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", base) or base in {
-            "python.exe", "pythonw.exe"}:
+    if (re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", base)
+            or base in {"python.exe", "pythonw.exe", "py", "py.exe",
+                        "pyw", "pyw.exe"}):
         if "-m" in args or "-c" in args:
             return None, False, False
         if args and args[0] == "--":
             args = args[1:]
-        candidate = next((arg for arg in args if not arg.startswith("-")), None)
-        if candidate and (os.path.splitext(candidate)[1].lower() in SCRIPT_SUFFIXES
-                          or _has_pathsep(candidate)):
+        candidate = _script_from_args(args)
+        if candidate:
             return (_resolve_command_path(candidate, cwd), False,
                     not os.path.isabs(os.path.expanduser(candidate)))
         return None, False, False
@@ -1758,9 +1788,34 @@ def _script_target(tokens, cwd):
             return None, False, False
         if args and args[0] == "--":
             args = args[1:]
-        candidate = next((arg for arg in args if not arg.startswith("-")), None)
-        if candidate and (os.path.splitext(candidate)[1].lower() in SCRIPT_SUFFIXES
-                          or _has_pathsep(candidate)):
+        candidate = _script_from_args(args)
+        if candidate:
+            return (_resolve_command_path(candidate, cwd), False,
+                    not os.path.isabs(os.path.expanduser(candidate)))
+        return None, False, False
+
+    if base in {"cmd", "cmd.exe"}:
+        if not any(arg.lower() in ("/c", "/k") for arg in args):
+            return None, False, False
+        candidate = _script_from_args(args, flag_prefixes=("/",))
+        if candidate:
+            return (_resolve_command_path(candidate, cwd), False,
+                    not os.path.isabs(os.path.expanduser(candidate)))
+        return None, False, False
+
+    if base in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
+        lowered = [arg.lower() for arg in args]
+        if any(arg in ("-c", "-command", "/c", "/command") for arg in lowered):
+            return None, False, False
+        candidate = None
+        for i, arg in enumerate(lowered):
+            if arg in ("-file", "-f", "/file") and i + 1 < len(args):
+                candidate = args[i + 1]
+                break
+        if candidate is None:
+            candidate = _script_from_args(args, flag_prefixes=("-", "/"))
+        if candidate and (os.path.splitext(candidate)[1].lower()
+                          in SCRIPT_SUFFIXES or _has_pathsep(candidate)):
             return (_resolve_command_path(candidate, cwd), False,
                     not os.path.isabs(os.path.expanduser(candidate)))
         return None, False, False
@@ -2127,10 +2182,10 @@ def detect_project(root):
             note_file(script_name)
             suffix = os.path.splitext(script_name)[1].lower()
             if suffix in (".bat", ".cmd"):
-                cmd = "cmd /d /c %s" % shlex.quote(script_name)
+                cmd = "cmd /d /s /c %s" % shell_quote(script_name)
             elif suffix == ".ps1":
                 cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File %s" % (
-                    shlex.quote(script_name))
+                    shell_quote(script_name))
             else:
                 cmd = "bash %s" % shlex.quote("./" + script_name)
             add(cmd, "现有启动脚本", script_name, None, 70,
@@ -2266,6 +2321,10 @@ def stop_app_and_wait(app, timeout=APP_STOP_TIMEOUT_SEC, listeners=None):
     ok, error = signal_app_stop(target)
     if not ok:
         return False, error
+    if IS_WINDOWS and app.get("runToken"):
+        # Job 兜底：进程树快照之后新拉起的孙进程（如 bat 再启动 python 的
+        # 子进程）不在 ppid 快照里，按 Job Object 一并终止，避免漏杀。
+        winops.terminate_job(app["runToken"])
     deadline = time.monotonic() + max(0.0, timeout)
     # uid 只查一次：信号已在循环外发出，循环仅做存活探测，
     # 避免 50ms 一次的 ps 子进程（PID 复用时最坏多等一个超时周期，无副作用）。
@@ -2414,6 +2473,22 @@ def rotate_log_file(path, max_bytes=MAX_LOG_BYTES, backups=LOG_BACKUPS):
             return False
 
 
+def _decode_log_bytes(data):
+    """日志按 UTF-8 读取；cmd.exe/bat 自身输出走系统代码页（GBK），
+    无法整篇统一编码，逐行回退解码，保证混合内容不整篇乱码。"""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    lines = []
+    for raw in data.split(b"\n"):
+        try:
+            lines.append(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            lines.append(raw.decode("gbk", errors="replace"))
+    return "\n".join(lines)
+
+
 def _tail_file_lines(path, count, block_size=65536):
     try:
         with open(path, "rb") as f:
@@ -2431,7 +2506,7 @@ def _tail_file_lines(path, count, block_size=65536):
                 chunks.append(chunk)
                 newlines += chunk.count(b"\n")
         data = b"".join(reversed(chunks))
-        return data.decode("utf-8", errors="replace").splitlines()[-count:]
+        return _decode_log_bytes(data).splitlines()[-count:]
     except OSError:
         return []
 

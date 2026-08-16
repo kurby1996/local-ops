@@ -7,7 +7,7 @@
 - `server.py` — 后端（仅标准库，Python 3.12）；`winops.py` 负责 Windows 进程/端口/文件选择/实例锁
 - `static/index.html` / `static/app.js`（入口）/ `static/js/{core,launchpad,services,overlays,ports,widgets}.js`（原生 ES Modules，无构建）/ `static/icons.js` — 前端（原生，禁框架/CDN/构建）；`core.js` 承载工具/API/浮层/状态/主题注册，`launchpad.js` 卡片+拖拽+诊断+启动台 KPI/分区过滤，`services.js` 表格+监控 KPI 火花线，`overlays.js` 模态+抽屉，`ports.js` 端口归一化纯函数，`widgets.js` 右侧信息栏（实时动态/告警、TOP5、小贴士、快捷操作）与导航轨状态；模块间用 `window.__poll` 共享轮询入口
 - 布局 v2：左侧 `.rail` 图标导航轨（启动台/服务监控视图切换 + 日志中心/设置中心弹层入口）+ 顶栏 + 内容/右侧信息栏双栏网格（≤1280px 侧栏下沉到底部、≤900px 导航轨隐藏）；结构样式集中在 `static/base.css` 末尾「布局 v2」段（主题令牌驱动），主题包负责视觉皮肤
-- `static/themes/` — 四套外观：`ops`（指挥台，黑白默认，`DEFAULT_UI_THEME` 并在清单中固定排首位）、`dusk`（暮紫）、`pine`（松绿）、`amber`（琥珀）。`ops.css` 为整包样式；其余主题 `@import` 后只覆盖令牌。`{id}.json` 清单含 `id/name/author/desc/colors[]`。`GET /api/state` 返回 `themes` 与 `uiTheme`；`POST /api/ui/theme {theme}` 校验 id 后落盘。设置中心「外观」选配色，「明暗」独立切换浅/深。
+- `static/themes/` — 七套外观：`ops`（指挥台，黑白默认，`DEFAULT_UI_THEME` 并在清单中固定排首位）、`dusk`（暮紫）、`pine`（松绿）、`amber`（琥珀）、`ocean`（沧海）、`sakura`（樱粉）、`ink`（水墨）。`ops.css` 为整包样式；其余主题 `@import` 后只覆盖令牌。`{id}.json` 清单含 `id/name/author/desc/colors[]`。`GET /api/state` 返回 `themes` 与 `uiTheme`；`POST /api/ui/theme {theme}` 校验 id 后落盘。设置中心「外观」选配色，「明暗」独立切换浅/深。
 - `static/fonts/GeistMono-Variable.woff2` — vendored 数据/代码字体；中文与正文使用 Segoe UI / 微软雅黑；`static/icons/*.svg` — Lucide 图标源文件（vendored）；`tools/gen_icons.py` — 由 svg 重新生成 `icons.js`（勿手改 icons.js）
 - `static/assets/` — 品牌素材：`console-app-icon.png` 为主图，`brand-mark.png` 为顶栏标识；`favicon-32.png` / `favicon.ico` / `apple-touch-icon.png` 由 `tools/gen_brand_assets.py` 生成
 - `%APPDATA%\总控台\config.json` — 用户配置；`icons/` 为应用图标
@@ -110,7 +110,7 @@
 - **任务取消协议**：一次性任务内部的“用户主动取消”以退出码 **130** 通知总控台；0 表示成功，其余表示失败。不要通过日志文字猜测状态
 - **配置健康**：`inspect_app_health` 只解析确定无歧义的简单命令并执行 stat/权限/PATH 检查，不执行命令、不展开变量/通配符。相对脚本按配置 cwd（空值时用户主目录）解析；复杂或动态命令返回 unknown
 - **运行中编辑**：编辑面板打开时立即显示“停止服务”。点击只调用 stop，面板保持打开且当前草稿不变；停止成功后用户继续编辑并普通保存。名称/图标仍可在运行中直接保存。`stopBeforeUpdate:true` 保留为 API 客户端的原子停止更新能力，但不是默认前端流程。
-- **无终端 PATH**：`start.vbs` / pythonw 启动不会读取用户 shell 配置；子应用启动环境需显式补入常见 Node/Python/Git 目录，保证 `node`/`npm`/`pnpm` 等可用。启动 API 短暂探测立即退出，并把日志末行作为明确错误返回。
+- **无终端 PATH**：`start.vbs` / pythonw 启动不会读取用户 shell 配置；子应用启动环境需显式补入常见 Node/Python/Git 目录与各包管理器全局安装目录（npm/pnpm/Yarn/Scoop/Chocolatey/Deno、pip `--user` Scripts、每用户 Python），保证 `node`/`npm`/`pnpm` 等可用，也支持命令本身即全局安装 CLI（如 `dsh`/`codex`）的卡片——无需 bat/python 脚本，健康检查按补全 PATH 做 `which` 判定。启动 API 短暂探测立即退出，并把日志末行作为明确错误返回。
 - **日志**：单文件超过 10MB 时 copy-truncate，保留 3 份轮转备份；日志 API 从文件尾部分块读取，不将整个日志读入内存。
 - **keep-alive 陷阱**：POST start/stop 前端会带 `{}` body，handler 必须 `discard_body()` 读掉——否则残留字节污染同一 keep-alive 连接的下一个请求（method 解析成 `{}GET` → 501，前端显示断连横幅）。新增不读 body 的 POST 路由时同样处理。
 - **运行目录**：默认配置/图标位于 `%APPDATA%\总控台`，日志位于 `%LOCALAPPDATA%\总控台\Logs`；`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR` 可显式覆盖，覆盖时对应目录不自动迁移旧 `data/`。

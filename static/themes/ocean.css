@@ -1,0 +1,69 @@
+/* ============================================================
+   总控台主题 — 沧海
+   浅雾蓝底 / 深海青底，整页带蓝青调，不是黑白
+   复用 Ops 整包样式，只覆盖色彩令牌
+   ============================================================ */
+
+@import url("/themes/ops.css");
+
+:root {
+  color-scheme: light;
+
+  --room: #e3ecf2;
+  --card: #f9fcfd;
+  --card-2: #ebf3f7;
+  --paper: var(--card);
+  --bg: var(--room);
+
+  --ink: #0f2230;
+  --ink-2: #3b5160;
+  --ink-3: #536a79;
+  --ink-4: #5b7382;
+
+  --line: rgba(15, 34, 48, 0.12);
+  --line-2: rgba(15, 34, 48, 0.24);
+
+  --accent: #0d6d95;
+  --accent-ink: var(--accent);
+  --on-accent: #ffffff;
+  --green: #2f6b3a;
+  --red: #b3231a;
+  --amber: #92600a;
+  --purple: #7c5cff;
+
+  --shadow: 0 1px 2px rgba(15, 34, 48, 0.09);
+  --shadow-lg: 0 12px 32px rgba(15, 34, 48, 0.15);
+  --raised: var(--shadow);
+  --plate-shadow: var(--shadow-lg);
+  --focus-ring: 0 0 0 2.5px rgba(13, 109, 149, 0.30);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --room: #071318;
+  --card: #17313c;
+  --card-2: #0e2028;
+  --paper: var(--card);
+  --bg: var(--room);
+
+  --ink: #e9f4f9;
+  --ink-2: #bad3dd;
+  --ink-3: #9cb5c1;
+  --ink-4: #86a0ac;
+
+  --line: rgba(186, 211, 221, 0.18);
+  --line-2: rgba(186, 211, 221, 0.34);
+
+  --accent: #4cc3e9;
+  --accent-ink: var(--accent);
+  --on-accent: #03161e;
+  --green: #57cf8f;
+  --red: #f28a78;
+  --amber: #ecc36b;
+  --purple: #b79bff;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.42);
+  --shadow-lg: 0 14px 36px rgba(0, 0, 0, 0.56);
+  --focus-ring: 0 0 0 2.5px rgba(76, 195, 233, 0.38);
+}
