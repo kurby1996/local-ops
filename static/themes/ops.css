@@ -48,7 +48,8 @@
   --plate-shadow: var(--shadow-lg);
   --focus-ring: 0 0 0 2.5px rgba(47, 111, 222, 0.32);
 
-  --content-max: 1320px;
+  /* 主栏随窗口拉满；仅在超宽屏做软上限，避免行宽失控 */
+  --content-max: 1760px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -145,7 +146,7 @@ kbd {
   border-bottom: 1px solid var(--line);
 }
 .topbar-inner {
-  max-width: var(--content-max); margin: 0 auto;
+  width: 100%; max-width: none; margin: 0;
   display: flex; align-items: center; gap: 18px;
   height: 58px; padding: 0 28px;
 }
@@ -227,7 +228,14 @@ a.icon-btn { text-decoration: none; }
 
 /* ---------- 主区域 ---------- */
 .main { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; }
-.main-inner { max-width: var(--content-max); margin: 0 auto; padding: 0 28px 80px; }
+/* 与顶栏同宽拉满 shell-col，不再居中缩成窄栏 */
+.main-inner {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0 28px 80px;
+  box-sizing: border-box;
+}
 
 /* ---------- 视图页头 ---------- */
 .view-head {
@@ -322,8 +330,10 @@ a.icon-btn { text-decoration: none; }
    ============================================================ */
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  /* auto-fit：折叠空轨，少卡片时也会横向撑满可用宽度 */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: 14px;
+  width: 100%;
 }
 
 .app-card {
@@ -448,14 +458,15 @@ a.icon-btn { text-decoration: none; }
 
 .app-primary { min-width: 92px; }
 
-/* 添加卡片 */
+/* 添加卡片：与应用卡同轨，但略矮，减少“空洞占半屏”的观感 */
 .add-card {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-  min-height: 164px;
+  min-height: 148px;
   border: 1.5px dashed var(--line-2); border-radius: 12px;
   background: transparent; color: var(--ink-3);
   cursor: pointer; font-weight: 600; font-size: 13px;
   transition: all 0.15s ease;
+  align-self: stretch;
 }
 .add-text { font-weight: 600; }
 .add-card:hover {

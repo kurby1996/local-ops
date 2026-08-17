@@ -952,10 +952,9 @@ function moveDrag(e) {
       flip(d.grid, () => d.grid.insertBefore(d.ph, ref));
     }
   } else if (over && d.grid.contains(over)) {
-    /* 添加卡上 → 网格末尾。添加卡被 prepend 到网格首位，
-       insertBefore(d.ph, over) 会把卡片插到首位，与“末尾”意图相反。 */
-    if (d.ph !== d.grid.lastChild) {
-      flip(d.grid, () => d.grid.appendChild(d.ph));
+    /* 添加卡固定在网格末尾：拖到添加卡上时占位也落到末尾之前。 */
+    if (d.ph.nextSibling !== over) {
+      flip(d.grid, () => d.grid.insertBefore(d.ph, over));
     }
   }
 }
@@ -1097,9 +1096,9 @@ export function renderLaunchpad(apps, firstRender) {
   addSvc.remove();
   addTask.remove();
   reconcile(svcGrid, svcs, a => a.id, createAppCard, updateAppCard, firstRender);
-  svcGrid.prepend(addSvc);                  // 新增入口始终优先可见
+  svcGrid.append(addSvc);                   // 应用卡先铺满左侧，添加入口靠后
   reconcile(taskGrid, tasks, a => a.id, createAppCard, updateAppCard, firstRender);
-  taskGrid.prepend(addTask);                // 批处理新增入口始终优先可见
+  taskGrid.append(addTask);                 // 批处理同上
   renderLpKpi(apps, svcs, tasks);
   latestSvcs = svcs;
   latestTasks = tasks;
