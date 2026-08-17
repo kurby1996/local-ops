@@ -14,6 +14,7 @@ import time
 from ctypes import wintypes
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_NEW_CONSOLE = 0x00000010
 CREATE_NO_WINDOW = 0x08000000
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
 DETACHED_PROCESS = 0x00000008
@@ -1038,11 +1039,29 @@ def launcher_alert(message):
         pass
 
 
-def popen_creationflags(hidden=True):
+def popen_creationflags(hidden=True, interactive=False):
+    """Build CreateProcess flags for launched apps.
+
+    interactive=True opens a real console window (CREATE_NEW_CONSOLE) so
+    scripts can accept keyboard input. That mode is mutually exclusive with
+    CREATE_NO_WINDOW.
+    """
     flags = CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT
-    if hidden:
+    if interactive:
+        flags |= CREATE_NEW_CONSOLE
+    elif hidden:
         flags |= CREATE_NO_WINDOW
     return flags
+
+
+def popen_startupinfo(show=False):
+    """Optional STARTUPINFO; show=True forces the new window visible (SW_SHOWNORMAL)."""
+    if not show:
+        return None
+    info = subprocess.STARTUPINFO()
+    info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    info.wShowWindow = 1  # SW_SHOWNORMAL
+    return info
 
 
 def detached_creationflags(breakaway=False):

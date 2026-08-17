@@ -171,7 +171,13 @@ function createAppCard() {
     diag: bDiag, restart: bRestart, edit: bEdit, del: bDel };
 
   const id = () => card.dataset.key;
-  primary.addEventListener('click', () => toggleApp(id(), primary));
+  primary.addEventListener('click', e => {
+    // Alt/Option+点击：即使未开交互终端也弹出附加参数输入
+    if (primary) primary.__altStart = !!(e && e.altKey);
+    toggleApp(id(), primary).finally(() => {
+      if (primary) delete primary.__altStart;
+    });
+  });
   bCopy.addEventListener('click', async () => {
     const a = findApp(id());
     const p = preferredOpenPort(a);
@@ -409,6 +415,106 @@ function updateAppCard(card, app) {
   maybeFetchFavicon(card, app);
 }
 
+/* ---------------- 启动附加参数 ---------------- */
+const startArgsMask = $('#startArgsMask');
+const startArgsTitle = $('#startArgsTitle');
+const startArgsCmd = $('#startArgsCmd');
+const startArgsHint = $('#startArgsHint');
+const fStartArgs = $('#fStartArgs');
+const startArgsCancel = $('#startArgsCancel');
+const startArgsOk = $('#startArgsOk');
+let startArgsResolver = null;
+
+function closeStartArgsPrompt(value) {
+  if (!startArgsMask) return;
+  closeLayer(startArgsMask);
+  const resolve = startArgsResolver;
+  startArgsResolver = null;
+  if (resolve) resolve(value);
+}
+
+function promptStartArgs(app) {
+  if (!startArgsMask || !fStartArgs) {
+    return Promise.resolve({ ok: true, args: '' });
+  }
+  const isTask = (app.kind || 'service') === 'task';
+  const interactive = !!app.interactive;
+  setText(startArgsTitle, (isTask ? '运行 ' : '启动 ') + (app.name || (isTask ? '任务' : '应用')));
+  setText(startArgsCmd, app.command || '');
+  startArgsCmd.title = app.command || '';
+  setText(startArgsHint, interactive
+    ? '参数会追加到配置命令之后。也可留空，在弹出的终端窗口中用键盘选择/输入。'
+    : '参数会追加到配置命令之后，仅本次生效，不会改写卡片配置。');
+  fStartArgs.value = '';
+  return new Promise(resolve => {
+    startArgsResolver = resolve;
+    openLayer(startArgsMask, fStartArgs);
+  });
+}
+if (startArgsCancel) {
+  startArgsCancel.addEventListener('click', () => closeStartArgsPrompt(null));
+}
+if (startArgsOk) {
+  startArgsOk.addEventListener('click', () => {
+    closeStartArgsPrompt({ ok: true, args: (fStartArgs.value || '').trim() });
+  });
+}
+if (startArgsMask) {
+  startArgsMask.addEventListener('mousedown', e => {
+    if (e.target === startArgsMask) closeStartArgsPrompt(null);
+  });
+}
+if (fStartArgs) {
+  fStartArgs.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      closeStartArgsPrompt({ ok: true, args: (fStartArgs.value || '').trim() });
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeStartArgsPrompt(null);
+    }
+  });
+}
+
+async function runAppStart(id, button, extraArgs) {
+  const app = findApp(id);
+  if (!app) return;
+  const isTask = (app.kind || 'service') === 'task';
+  if (button) {
+    button.dataset.busy = 'true';
+    button.disabled = true;
+  }
+  const targetName = app.name || (isTask ? '任务' : '应用');
+  const body = {};
+  if (extraArgs) body.args = extraArgs;
+  toast((isTask ? '正在运行 ' : '正在启动 ') + targetName + '…');
+  try {
+    const result = await act(post('/api/apps/' + id + '/start', body));
+    if (result && result.ok !== false) {
+      if (app.interactive) {
+        toast('已打开终端：' + targetName);
+      } else if (isTask) {
+        toast(targetName + '已开始运行');
+      } else {
+        toast('启动命令已执行，正在等待' + (app.port ? ' :' + app.port : '服务'));
+      }
+      await window.__poll();
+      setTimeout(window.__poll, 700);
+      setTimeout(window.__poll, 1800);
+    } else {
+      await window.__poll();
+    }
+  } finally {
+    if (button) {
+      delete button.dataset.busy;
+      const latest = findApp(id);
+      button.disabled = !!(latest && !latest.running &&
+        (latest.portConflict || latest.portOccupied ||
+          (latest.health && latest.health.blocking)));
+    }
+  }
+}
+
 async function toggleApp(id, button) {
   const app = findApp(id);
   if (!app) return;
@@ -423,40 +529,42 @@ async function toggleApp(id, button) {
     return;
   }
   const starting = !app.running;
-  if (button) {
-    button.dataset.busy = 'true';
-    button.disabled = true;
-  }
-  const targetName = app.name || (isTask ? '任务' : '应用');
-  toast(starting
-    ? (isTask ? '正在运行 ' : '正在启动 ') + targetName + '…'
-    : (isTask ? '正在中止 ' : '正在停止 ') + targetName + '…');
-  try {
-    const result = await act(post('/api/apps/' + id + '/' + (starting ? 'start' : 'stop')));
-    if (result && result.ok !== false) {
-      if (starting) {
-        toast(isTask
-          ? targetName + '已开始运行'
-          : '启动命令已执行，正在等待' + (app.port ? ' :' + app.port : '服务'));
-        await window.__poll();
-        setTimeout(window.__poll, 700);
-        setTimeout(window.__poll, 1800);
-      } else {
+  if (!starting) {
+    if (button) {
+      button.dataset.busy = 'true';
+      button.disabled = true;
+    }
+    const targetName = app.name || (isTask ? '任务' : '应用');
+    toast((isTask ? '正在中止 ' : '正在停止 ') + targetName + '…');
+    try {
+      const result = await act(post('/api/apps/' + id + '/stop'));
+      if (result && result.ok !== false) {
         await window.__poll();
         toast((isTask ? '已中止 ' : '已停止 ') + targetName);
+      } else {
+        await window.__poll();
       }
-    } else {
-      await window.__poll();
+    } finally {
+      if (button) {
+        delete button.dataset.busy;
+        const latest = findApp(id);
+        button.disabled = !!(latest && !latest.running &&
+          (latest.portConflict || latest.portOccupied ||
+            (latest.health && latest.health.blocking)));
+      }
     }
-  } finally {
-    if (button) {
-      delete button.dataset.busy;
-      const latest = findApp(id);
-      button.disabled = !!(latest && !latest.running &&
-        (latest.portConflict || latest.portOccupied ||
-          (latest.health && latest.health.blocking)));
-    }
+    return;
   }
+
+  // interactive：点运行直接弹终端，不再多一步参数确认。
+  // Alt+点击仍可按需附加参数（API 保留，页面默认不打扰）。
+  let extraArgs = '';
+  if (button && button.__altStart) {
+    const choice = await promptStartArgs(app);
+    if (!choice) return;
+    extraArgs = choice.args || '';
+  }
+  await runAppStart(id, button, extraArgs);
 }
 export { toggleApp };
 

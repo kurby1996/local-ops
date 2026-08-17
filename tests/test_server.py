@@ -26,6 +26,27 @@ class ParsingTests(unittest.TestCase):
         self.assertIsNotNone(server.validate_port(True)[1])
         self.assertIsNotNone(server.validate_port(70000)[1])
 
+    def test_compose_start_command_and_args(self):
+        self.assertEqual(
+            server.compose_start_command("tool.cmd", None), "tool.cmd")
+        self.assertEqual(
+            server.compose_start_command("tool.cmd", "  winusb  "),
+            "tool.cmd winusb")
+        self.assertEqual(server.normalize_start_args(None), (None, None))
+        self.assertEqual(server.normalize_start_args("  segger "), ("segger", None))
+        self.assertIsNotNone(server.normalize_start_args(123)[1])
+        self.assertIsNotNone(server.normalize_start_args("a\nb")[1])
+
+    def test_interactive_field_defaults(self):
+        fields, err = server.validate_app_fields(
+            {"name": "x", "command": "echo 1"}, partial=False)
+        self.assertIsNone(err)
+        self.assertFalse(fields["interactive"])
+        fields, err = server.validate_app_fields(
+            {"interactive": True}, partial=True)
+        self.assertIsNone(err)
+        self.assertTrue(fields["interactive"])
+
     def test_listener_scan_preserves_ipv6_loopback_for_open_links(self):
         output = """COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
 node 101 user 1u IPv6 0x0 0t0 TCP [::1]:5173 (LISTEN)
@@ -296,6 +317,28 @@ class AppHealthTests(unittest.TestCase):
             ok, error, proc, _, _ = server.start_app(app)
             self.assertTrue(ok, error)
             self.assertEqual(proc.wait(timeout=3), 130)
+
+    def test_start_app_appends_extra_args(self):
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(server, "LOGS_DIR", td):
+            marker = os.path.join(td, "args.txt")
+            script = os.path.join(td, "echo_args.py")
+            with open(script, "w", encoding="utf-8") as f:
+                f.write(
+                    "import sys\n"
+                    "open(%r, 'w', encoding='utf-8').write(' '.join(sys.argv[1:]))\n"
+                    % marker
+                )
+            app = {
+                "id": "cafebabe",
+                "cwd": td,
+                "command": server.command_for_script(script),
+            }
+            ok, error, proc, _, _ = server.start_app(app, extra_args="alpha beta")
+            self.assertTrue(ok, error)
+            self.assertEqual(proc.wait(timeout=5), 0)
+            with open(marker, "r", encoding="utf-8") as f:
+                self.assertEqual(f.read().strip(), "alpha beta")
 
 
 class ProjectDetectionTests(unittest.TestCase):

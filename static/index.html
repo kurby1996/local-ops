@@ -469,6 +469,16 @@
       <input id="fPort" type="number" min="1" max="65535" step="1" inputmode="numeric"
         placeholder="可选，用于状态检测与快速打开">
     </div>
+    <div class="field field-switch" id="interactiveField">
+      <div class="field-switch-row">
+        <div class="field-switch-copy">
+          <label id="fInteractiveLabel" for="fInteractive">在终端窗口中运行</label>
+          <p class="hint" id="fInteractiveHint">开启后点运行直接弹出命令行窗口；关闭则后台运行，输出写入日志</p>
+        </div>
+        <button class="switch" id="fInteractive" type="button" role="switch"
+          aria-checked="false" aria-labelledby="fInteractiveLabel"><i></i></button>
+      </div>
+    </div>
     <details class="appearance-details" id="appearanceDetails">
       <summary>
         <span class="appearance-summary-main">
@@ -508,6 +518,25 @@
       <button class="btn" id="appCancel" type="button">取消</button>
       <button class="btn btn-stop" id="appStopEdit" type="button" hidden>停止</button>
       <button class="btn btn-accent" id="appSave" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 启动附加参数模态 ===== -->
+<div class="modal-mask" id="startArgsMask" aria-hidden="true" inert>
+  <div class="modal modal-sm" id="startArgsModal" role="dialog" aria-modal="true" aria-labelledby="startArgsTitle">
+    <h3 class="modal-title" id="startArgsTitle">运行任务</h3>
+    <p class="hint" id="startArgsCmd" style="margin-bottom:12px"></p>
+    <div class="field">
+      <label for="fStartArgs">附加命令行参数（可选）</label>
+      <input id="fStartArgs" class="mono" placeholder="例如 winusb 或 segger；留空则原样执行" autocomplete="off">
+      <p class="hint" id="startArgsHint" style="margin-top:8px">
+        参数会追加到配置命令之后。开启「终端窗口」时也可在弹出的控制台里直接输入。
+      </p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="startArgsCancel" type="button">取消</button>
+      <button class="btn btn-accent" id="startArgsOk" type="button">运行</button>
     </div>
   </div>
 </div>

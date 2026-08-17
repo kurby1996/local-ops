@@ -397,8 +397,8 @@ class Config:
                "watchedKeywords": [], "uiTheme": DEFAULT_UI_THEME}
     APP_DEFAULT = {"id": None, "name": "", "command": "", "cwd": None,
                    "port": None, "emoji": None, "glyph": None, "icon": None,
-                   "favicon": None, "kind": "service", "lastPid": None,
-                   "lastPgid": None, "runToken": None,
+                   "favicon": None, "kind": "service", "interactive": False,
+                   "lastPid": None, "lastPgid": None, "runToken": None,
                    "attached": False, "lastExit": None, "createdAt": 0}
 
     def __init__(self, path):
@@ -1204,6 +1204,7 @@ def build_apps(cfg, listeners, groups=None):
             "uptimeSec": ((snap.get(pid) or listener_snap.get(pid) or {}).get("etime")
                           if pid else None),
             "kind": app.get("kind") or "service",
+            "interactive": bool(app.get("interactive")),
             "attached": bool(app.get("attached")),
             "lastExit": public_last_exit(app),
             "health": health,
@@ -1531,12 +1532,44 @@ def build_launch_env(token, environ=None):
     return env
 
 
-def start_app(app):
-    """返回 (ok, error, proc|None, pgid|None, token|None)。"""
+def compose_start_command(base_command, extra_args=None):
+    """拼配置命令与本次附加参数；extra_args 为空则原样返回。"""
+    command = (base_command or "").strip()
+    extra = (extra_args or "").strip() if isinstance(extra_args, str) else ""
+    if not extra:
+        return command
+    return "%s %s" % (command, extra)
+
+
+def normalize_start_args(raw):
+    """校验启动时附加的命令行参数。返回 (args|None, error|None)。"""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str):
+        return None, "args 必须是字符串"
+    if "\n" in raw or "\r" in raw:
+        return None, "args 不能包含换行"
+    if len(raw) > 2000:
+        return None, "args 过长（最多 2000 字符）"
+    text = raw.strip()
+    return (text or None), None
+
+
+def start_app(app, extra_args=None):
+    """返回 (ok, error, proc|None, pgid|None, token|None)。
+
+    interactive 应用会弹出独立控制台窗口并保留 stdin，供菜单/键盘输入；
+    非 interactive 保持无窗启动，stdout/stderr 写入应用日志。
+    extra_args 仅本次启动追加在配置 command 之后，不改写配置。
+    """
     _ensure_private_dir(LOGS_DIR)
     log_path = os.path.join(LOGS_DIR, "%s.log" % app["id"])
     rotate_log_file(log_path)
     cwd = app.get("cwd") or os.path.expanduser("~")
+    command = compose_start_command(app.get("command"), extra_args)
+    if not command:
+        return False, "启动命令为空", None, None, None
+    interactive = bool(app.get("interactive"))
     try:
         log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND,
                          0o600)
@@ -1549,25 +1582,57 @@ def start_app(app):
     env = build_launch_env(token)
     marker = RUN_TOKEN_ARG_PREFIX + token
     try:
-        header = "\n===== 启动于 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        if interactive:
+            header = (
+                "\n===== 启动于 %s [交互终端] =====\n命令: %s\n"
+                "（输出与输入在独立终端窗口，不写入本日志）\n"
+                % (stamp, command)
+            )
+        else:
+            header = "\n===== 启动于 %s =====\n" % stamp
         logf.write(header.encode("utf-8"))
-        env["CONSOLE_SUPERVISE_CMD"] = app["command"]
+        env["CONSOLE_SUPERVISE_CMD"] = command
         env["PYTHONUNBUFFERED"] = "1"
         # 管道下 Python 默认用控制台代码页（中文 Windows 为 GBK），
         # 与日志的 UTF-8 解码冲突；显式统一为 UTF-8。
         env["PYTHONIOENCODING"] = "utf-8"
-        proc = subprocess.Popen(
-            [sys.executable, "-u", os.path.abspath(__file__),
-             "--supervise", marker],
-            cwd=cwd, stdout=logf, stderr=subprocess.STDOUT, env=env,
-            creationflags=winops.popen_creationflags(hidden=True))
+        if interactive:
+            # 独立控制台：必须用带控制台子系统的 python.exe（不能用 pythonw），
+            # 且不重定向 stdio，否则从 start.vbs/pythonw 拉起时窗口常不出现。
+            logf.close()
+            logf = None
+            console_py = console_python_executable()
+            env["CONSOLE_SUPERVISE_INTERACTIVE"] = "1"
+            # 设置窗口标题，方便用户认出是总控台拉起的终端。
+            title = (app.get("name") or "总控台任务").strip() or "总控台任务"
+            env["CONSOLE_SUPERVISE_TITLE"] = title[:80]
+            proc = subprocess.Popen(
+                [console_py, "-u", os.path.abspath(__file__),
+                 "--supervise", marker],
+                cwd=cwd, env=env,
+                startupinfo=winops.popen_startupinfo(show=True),
+                creationflags=winops.popen_creationflags(
+                    hidden=False, interactive=True))
+        else:
+            env["CONSOLE_SUPERVISE_INTERACTIVE"] = "0"
+            proc = subprocess.Popen(
+                [sys.executable, "-u", os.path.abspath(__file__),
+                 "--supervise", marker],
+                cwd=cwd, stdout=logf, stderr=subprocess.STDOUT, env=env,
+                creationflags=winops.popen_creationflags(hidden=True))
         job = winops.create_named_job(token)
         if job:
             winops.assign_process_to_job(job, proc.pid)
     except Exception as e:
-        logf.close()
+        if logf is not None:
+            try:
+                logf.close()
+            except Exception:
+                pass
         return False, "启动失败: %s" % e, None, None, None
-    logf.close()  # 子进程已持有副本，父进程关闭避免 fd 泄漏
+    if logf is not None:
+        logf.close()  # 子进程已持有副本，父进程关闭避免 fd 泄漏
     return True, None, proc, proc.pid, token
 
 
@@ -2829,6 +2894,12 @@ def validate_app_fields(data, partial):
         fields["kind"] = data["kind"]
     elif not partial:
         fields["kind"] = "service"
+    if "interactive" in data:
+        if not isinstance(data["interactive"], bool):
+            return None, "interactive 必须是布尔值"
+        fields["interactive"] = data["interactive"]
+    elif not partial:
+        fields["interactive"] = False
     if fields.get("kind") == "task":
         fields["port"] = None  # 批处理任务无端口语义
     return fields, None
@@ -3261,7 +3332,6 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 app_id, action = m.group(1), m.group(2)
                 if action == "start":
-                    self.discard_body()
                     self.handle_app_start(app_id)
                     return
                 if action == "stop":
@@ -3269,7 +3339,6 @@ class Handler(BaseHTTPRequestHandler):
                     self.handle_app_stop(app_id)
                     return
                 if action == "restart":
-                    self.discard_body()
                     self.handle_app_restart(app_id)
                     return
                 if action == "diagnose":
@@ -3473,6 +3542,7 @@ class Handler(BaseHTTPRequestHandler):
                "command": fields["command"], "cwd": fields["cwd"],
                "port": fields["port"], "emoji": fields["emoji"],
                "glyph": fields["glyph"], "kind": fields["kind"],
+               "interactive": bool(fields.get("interactive")),
                "icon": None, "favicon": None, "lastPid": None,
                "lastPgid": None, "runToken": None,
                "attached": False, "lastExit": None,
@@ -3596,6 +3666,14 @@ class Handler(BaseHTTPRequestHandler):
         _, app = self._get_app_or_404(app_id)
         if app is None:
             return
+        data, err = self.read_json_body()
+        if err:
+            self.send_err(400, err)
+            return
+        extra_args, err = normalize_start_args(data.get("args"))
+        if err:
+            self.send_err(400, err)
+            return
         if app_alive_sign(app):
             self.send_json({"ok": False, "error": "应用已在运行"})
             return
@@ -3614,7 +3692,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "端口 %d 已被 PID %d 占用" %
                             (port, occupied[0][0])}, 409)
             return
-        ok, err, proc, pgid, token = start_app(app)
+        ok, err, proc, pgid, token = start_app(app, extra_args=extra_args)
         if not ok:
             self.send_json({"ok": False, "error": err})
             return
@@ -3624,7 +3702,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         # 一次性任务的正常形态就是快速退出，不能沿用服务的启动探测逻辑把
         # `echo`、清缓存等成功任务误判成“启动失败”。退出线程会独立记录结果。
-        if (app.get("kind") or "service") == "task":
+        # 交互终端常驻等待键盘输入，也不做快速退出探测。
+        if ((app.get("kind") or "service") == "task"
+                or bool(app.get("interactive"))):
             self.send_json({"ok": True, "pid": proc.pid})
             return
         deadline = time.monotonic() + STARTUP_PROBE_SEC
@@ -3678,6 +3758,14 @@ class Handler(BaseHTTPRequestHandler):
         _, app = self._get_app_or_404(app_id)
         if app is None:
             return
+        data, err = self.read_json_body()
+        if err:
+            self.send_err(400, err)
+            return
+        extra_args, err = normalize_start_args(data.get("args"))
+        if err:
+            self.send_err(400, err)
+            return
         if not app_alive_sign(app):
             self.send_err(409, "应用未在运行")
             return
@@ -3710,7 +3798,8 @@ class Handler(BaseHTTPRequestHandler):
         if not current:
             self.send_err(404, "应用已被删除")
             return
-        ok, err, proc, pgid, new_token = start_app(current)
+        ok, err, proc, pgid, new_token = start_app(
+            current, extra_args=extra_args)
         if not ok:
             self.send_err(500, err)
             return
@@ -3941,6 +4030,24 @@ def windowless_python_executable():
     exe = os.path.abspath(sys.executable or "")
     name = os.path.basename(exe).lower()
     mapping = {"python.exe": "pythonw.exe", "py.exe": "pyw.exe"}
+    replacement = mapping.get(name)
+    if replacement:
+        candidate = os.path.join(os.path.dirname(exe), replacement)
+        if os.path.isfile(candidate):
+            return candidate
+    return exe or sys.executable
+
+
+def console_python_executable():
+    """Prefer python/py with a real console for interactive terminal apps.
+
+    The console host often runs under pythonw (start.vbs / --detach). Spawning
+    another pythonw with CREATE_NEW_CONSOLE still uses the GUI subsystem and
+    frequently never shows a usable window. Map to python.exe when available.
+    """
+    exe = os.path.abspath(sys.executable or "")
+    name = os.path.basename(exe).lower()
+    mapping = {"pythonw.exe": "python.exe", "pyw.exe": "py.exe"}
     replacement = mapping.get(name)
     if replacement:
         candidate = os.path.join(os.path.dirname(exe), replacement)
@@ -4389,13 +4496,37 @@ def supervise_main(marker):
     command = os.environ.get("CONSOLE_SUPERVISE_CMD") or ""
     if not command:
         sys.exit(2)
+    interactive = os.environ.get("CONSOLE_SUPERVISE_INTERACTIVE") == "1"
+    title = (os.environ.get("CONSOLE_SUPERVISE_TITLE") or "").strip()
+    if interactive and IS_WINDOWS and title:
+        try:
+            ctypes = __import__("ctypes")
+            ctypes.windll.kernel32.SetConsoleTitleW(str(title))
+        except Exception:
+            pass
     try:
-        child = subprocess.Popen(
-            command, shell=True, stdout=sys.stdout, stderr=sys.stderr,
-            env=os.environ)
+        # 交互终端：stdin 也接到控制台，菜单脚本 / input() 才能读键盘。
+        child_kwargs = {
+            "shell": True,
+            "stdout": sys.stdout,
+            "stderr": sys.stderr,
+            "env": os.environ,
+        }
+        if interactive:
+            child_kwargs["stdin"] = sys.stdin
+        child = subprocess.Popen(command, **child_kwargs)
         code = child.wait()
     except Exception as exc:
-        sys.stderr.write("启动失败: %s\n" % exc)
+        try:
+            sys.stderr.write("启动失败: %s\n" % exc)
+            if interactive:
+                sys.stderr.write("按 Enter 关闭窗口…\n")
+                try:
+                    input()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         sys.exit(1)
     if isinstance(code, int) and 0 <= code <= 255:
         sys.exit(code)

@@ -9,6 +9,7 @@ import { $, el, setText, setChildren, icon, escapeHtml,
 /* ---------------- DOM 引用 ---------------- */
 const appModalMask = $('#appModalMask'), appModal = $('#appModal'), appModalTitle = $('#appModalTitle');
 const fName = $('#fName'), fCmd = $('#fCmd'), fCwd = $('#fCwd'), fPort = $('#fPort');
+const fInteractive = $('#fInteractive');
 const kindRow = $('#kindRow'), portField = $('#portField'), fCmdLabel = $('#fCmdLabel');
 const btnPickScript = $('#btnPickScript'), btnPickCwd = $('#btnPickCwd');
 const btnDetectProject = $('#btnDetectProject');
@@ -204,6 +205,22 @@ function resetDetection(clearAutoPort = false) {
   detectFiles.textContent = '';
 }
 
+function isInteractiveOn() {
+  return !!(fInteractive && fInteractive.classList.contains('on'));
+}
+function setInteractiveOn(on) {
+  if (!fInteractive) return;
+  const value = !!on;
+  fInteractive.classList.toggle('on', value);
+  fInteractive.setAttribute('aria-checked', String(value));
+}
+if (fInteractive) {
+  fInteractive.addEventListener('click', () => {
+    setInteractiveOn(!isInteractiveOn());
+    refreshEditSaveMode();
+  });
+}
+
 function modalLifecycleChanged() {
   if (!editingAppOriginal) return false;
   const currentPort = modalKind === 'task' ? null
@@ -273,7 +290,9 @@ export function openAppModal(app, presetKind, focusAction = '') {
   editingAppOriginal = app ? {
     command: app.command || '', cwd: app.cwd || null,
     port: app.port == null ? null : app.port,
-    kind: app.kind || 'service', running: !!app.running,
+    kind: app.kind || 'service',
+    interactive: !!app.interactive,
+    running: !!app.running,
   } : null;
   resetDetection();
   clearPendingIcon();
@@ -283,6 +302,7 @@ export function openAppModal(app, presetKind, focusAction = '') {
   fCmd.value = (app && app.command) || '';
   fCwd.value = (app && app.cwd) || '';
   fPort.value = app && app.port != null ? app.port : '';
+  setInteractiveOn(!!(app && app.interactive));
   [fName, fCmd, fCwd, fPort].forEach(clearFieldError);
   setModalKind(presetKind || (app && app.kind) || 'service');
   appearanceDetails.open = !!(app && (app.icon || app.glyph));
@@ -465,9 +485,11 @@ function rememberSavedApp(app, id, body) {
     cwd: body.cwd,
     port: body.port,
     kind: body.kind,
+    interactive: !!body.interactive,
     running: !!app.running,
   };
   setModalKind(body.kind);
+  setInteractiveOn(!!body.interactive);
 }
 
 async function saveApp() {
@@ -485,6 +507,7 @@ async function saveApp() {
     port,
     glyph: selectedGlyph || null,
     kind: modalKind,
+    interactive: isInteractiveOn(),
   };
   const wasCreating = !editingAppId;
   const attachRequest = wasCreating && pendingAttach && modalKind === 'service'

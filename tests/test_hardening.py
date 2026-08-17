@@ -310,7 +310,7 @@ class OperationLockTests(unittest.TestCase):
         fake_proc = mock.Mock(pid=43123)
         fake_proc.poll.return_value = None
 
-        def slow_start(app):
+        def slow_start(app, extra_args=None):
             calls.append(app["id"])
             entered.set()
             release.wait(2)
